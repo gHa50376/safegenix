@@ -525,7 +525,7 @@ def _upload_pending_one(rel_path: str):
         current_version = str(current.get("version") or current.get("modifiedTime") or "")
         expected = _versions().get(rel_path)
         if expected and current_version and current_version != expected:
-            raise RuntimeError("Data Google Drive telah berubah di perangkat lain. Buka Pengaturan > Cadangan Data dan coba sinkronkan ulang sebelum menyimpan kembali.")
+            raise RuntimeError("Data Google Drive telah berubah di perangkat lain. Tekan Sinkronkan sekarang sebelum menyimpan kembali.")
         updated = _execute_resumable(service.files().update(
             fileId=found["id"], media_body=media, fields="id,modifiedTime,version"
         ))
@@ -761,7 +761,7 @@ def render_account_settings():
         st.error(error)
     sync_error = st.session_state.get("_gdrive_sync_error")
     if sync_error:
-        st.warning("Ada data yang belum tersinkron ke Google Drive. Buka Cadangan Data dan coba sinkronkan ulang sebelum menutup aplikasi.")
+        st.warning("Ada data yang belum tersinkron ke Google Drive. Gunakan Sinkronkan sekarang sebelum menutup aplikasi.")
     if connected():
         info = user_info()
         email = info.get("emailAddress") or "Akun Google terhubung"
@@ -798,44 +798,6 @@ def render_account_settings():
     else:
         st.caption("Email Admin belum dikonfigurasi; tombol Kirim ke Admin akan dinonaktifkan.")
 
-
-
-def render_backup_account_status():
-    """Compact Drive status for the Settings > Cadangan Data section.
-
-    Normal D-Safe data writes are already synchronized automatically, so the
-    everyday UI does not need manual Sync/Disconnect buttons. A retry control
-    appears only when an actual synchronization error needs user action.
-    """
-    if not cloud_enabled():
-        st.info("Google Drive belum dikonfigurasi pada server aplikasi.")
-        return
-    if not _libs_available():
-        st.error("Paket Google API belum terpasang. Jalankan instalasi dari requirements.txt versi Google Drive.")
-        return
-
-    error = st.session_state.pop("_gdrive_auth_error", None)
-    if error:
-        st.error(error)
-
-    if connected():
-        info = user_info()
-        email = info.get("emailAddress") or "Akun Google terhubung"
-        name = info.get("displayName") or ""
-        st.success(f"Google Drive terhubung: {name + ' · ' if name else ''}{email}")
-        st.caption("Data Buku Kerja tersinkron otomatis. Cadangkan atau pulihkan data dari bagian ini bila diperlukan.")
-        sync_error = st.session_state.get("_gdrive_sync_error")
-        if sync_error:
-            st.warning("Sinkronisasi otomatis belum selesai. Coba ulang sebelum menutup aplikasi.")
-            if st.button("Coba Sinkronkan Ulang", key="gdrive_sync_retry_compact_v2", use_container_width=True):
-                if flush_pending(show_error=True) and force_refresh_cache():
-                    st.session_state.pop("_gdrive_sync_error", None)
-                    st.rerun()
-    else:
-        st.warning("Google Drive belum terhubung. Hubungkan akun agar data tersimpan permanen.")
-        url = authorization_url()
-        if url:
-            st.link_button("Hubungkan Google Drive", url, use_container_width=True)
 
 def _period_parts(filename: str):
     months = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"]
@@ -914,32 +876,36 @@ def send_to_admin(data: bytes, filename: str, mime_type: str, category: str) -> 
 
 
 def render_output_actions(data: bytes, filename: str, mime_type: str, category: str, *, allow_admin: bool = False):
-    """Render only the action that belongs on a report card.
-
-    Buku Kerja/PDF cards get no extra Drive controls. D-Safe and Safety Talk
-    get a single Kirim ke Admin button. Sending already creates the dedicated
-    Drive copy used for Admin sharing, so a separate "Simpan ke Drive Saya"
-    button is redundant.
-    """
-    if not allow_admin or not cloud_enabled() or not data:
+    """Add Drive actions below an existing D-Safe download button."""
+    if not cloud_enabled() or not data:
         return
     digest = hashlib.sha1((filename + str(len(data))).encode("utf-8")).hexdigest()[:12]
     if not connected():
-        st.caption("Hubungkan Google Drive di Pengaturan untuk mengirim PPT ke Admin.")
+        st.caption("Hubungkan Google Drive di Pengaturan untuk menyimpan output" + (" dan mengirim PPT ke Admin." if allow_admin else "."))
         return
     result_key = f"_gdrive_output_result_{digest}"
     prior = st.session_state.pop(result_key, None)
     if prior:
         kind, message = prior
         (st.success if kind == "ok" else st.error)(message)
-    disabled = not admin_configured()
-    if st.button("⇧ Kirim ke Admin", key=f"gdrive_admin_{digest}", use_container_width=True, disabled=disabled):
+    cols = st.columns(2 if allow_admin else 1)
+    if cols[0].button("☁ Simpan ke Drive Saya", key=f"gdrive_save_{digest}", use_container_width=True):
         try:
-            sent_name = send_to_admin(data, filename, mime_type, category)
-            st.session_state[result_key] = ("ok", f"PPT berhasil dikirim ke Admin sebagai {sent_name}.")
+            save_output(data, filename, mime_type, category)
+            st.session_state[result_key] = ("ok", "Output berhasil disimpan ke Google Drive Anda.")
         except Exception as exc:
-            st.session_state[result_key] = ("error", f"Pengiriman ke Admin gagal: {exc}")
+            st.session_state[result_key] = ("error", f"Penyimpanan ke Google Drive gagal: {exc}")
         st.rerun()
+    if allow_admin:
+        disabled = not admin_configured()
+        if cols[1].button("⇧ Kirim ke Admin", key=f"gdrive_admin_{digest}", use_container_width=True, disabled=disabled):
+            try:
+                sent_name = send_to_admin(data, filename, mime_type, category)
+                st.session_state[result_key] = ("ok", f"PPT berhasil dikirim ke Admin sebagai {sent_name}.")
+            except Exception as exc:
+                st.session_state[result_key] = ("error", f"Pengiriman ke Admin gagal: {exc}")
+            st.rerun()
+
 
 def save_backup_archive(data: bytes, filename: str) -> bool:
     if not connected():
