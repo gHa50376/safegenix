@@ -117,7 +117,7 @@ def _valid_state(state: str) -> bool:
 def authorization_url() -> Optional[str]:
     if not cloud_enabled() or not _libs_available():
         return None
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES)
+    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, autogenerate_code_verifier=False)
     flow.redirect_uri = str(_cfg()["redirect_uri"])
     state = _make_state()
     url, _ = flow.authorization_url(
@@ -443,7 +443,7 @@ def handle_oauth_callback() -> bool:
         st.session_state["_gdrive_auth_error"] = "Login Google ditolak karena state OAuth tidak valid atau kedaluwarsa. Silakan hubungkan kembali."
     else:
         try:
-            flow = Flow.from_client_config(_client_config(), scopes=SCOPES, state=str(state))
+            flow = Flow.from_client_config(_client_config(), scopes=SCOPES, state=str(state), autogenerate_code_verifier=False)
             flow.redirect_uri = str(_cfg()["redirect_uri"])
             flow.fetch_token(code=str(code))
             creds = flow.credentials
