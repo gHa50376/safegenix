@@ -19,9 +19,15 @@ import os
 import re
 import secrets as pysecrets
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Optional
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except Exception:
+    Fernet = InvalidToken = None
 
 import streamlit as st
 
@@ -43,6 +49,50 @@ SCOPES = [
 ROOT_FOLDER = "D-Safe"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 _STATE_TTL_SECONDS = 15 * 60
+
+# Persist only an encrypted OAuth credential envelope in this browser.  The
+# encryption key is derived from Streamlit Secrets and is never exposed to JS.
+# This lets a new Streamlit session on the same app origin reconnect to the
+# same user's Drive without keeping plaintext refresh tokens in localStorage.
+_AUTH_STORE_KEY = "dsafe.v364114.google-auth.v1"
+_AUTH_COMPONENT_KEY = "dsafe_google_auth_store"
+_AUTH_JS = r"""
+const stateKey = Symbol.for('dsafe.v364114.google-auth-store');
+const state = globalThis[stateKey] ||= {operations:new Map()};
+const STORE_KEY = 'dsafe.v364114.google-auth.v1';
+export default function({data,parentElement,setStateValue}){
+  parentElement.closest('[data-testid="stElementContainer"]')?.style.setProperty('display','none');
+  if(!data?.id || state.operations.has(data.id)) return;
+  const work = Promise.resolve().then(()=>{
+    let value = null;
+    if(data.operation === 'read'){
+      value = localStorage.getItem(STORE_KEY);
+    }else if(data.operation === 'write'){
+      localStorage.setItem(STORE_KEY, String(data.payload || ''));
+      value = true;
+    }else if(data.operation === 'clear'){
+      localStorage.removeItem(STORE_KEY);
+      value = true;
+    }else{
+      throw new Error('Operasi penyimpanan autentikasi tidak dikenal.');
+    }
+    setStateValue('result',{id:data.id,ok:true,value});
+  }).catch(e=>setStateValue('result',{id:data.id,ok:false,error:e?.message || String(e)}));
+  state.operations.set(data.id, work);
+  if(state.operations.size > 50){
+    for(const key of state.operations.keys()){
+      if(key !== data.id) state.operations.delete(key);
+      if(state.operations.size <= 25) break;
+    }
+  }
+}
+"""
+try:
+    _auth_bridge = st.components.v2.component(
+        'dsafe_google_auth_store', html='<span hidden></span>', js=_AUTH_JS, isolate_styles=False
+    )
+except Exception:
+    _auth_bridge = None
 
 
 def _cfg() -> dict:
@@ -115,6 +165,120 @@ def _valid_state(state: str) -> bool:
         return False
 
 
+def _auth_cipher():
+    if Fernet is None:
+        return None
+    # A stable server-side key; browser JavaScript only ever sees ciphertext.
+    raw = hashlib.sha256(_state_key() + b"|browser-auth-v1").digest()
+    return Fernet(base64.urlsafe_b64encode(raw))
+
+
+def _encrypt_auth_envelope() -> Optional[str]:
+    info = st.session_state.get("_gdrive_credentials")
+    if not isinstance(info, dict):
+        return None
+    cipher = _auth_cipher()
+    if cipher is None:
+        return None
+    obj = {
+        "credentials": info,
+        "user": st.session_state.get("_gdrive_user") or {},
+        "saved_at": int(time.time()),
+    }
+    return cipher.encrypt(json.dumps(obj, ensure_ascii=False).encode("utf-8")).decode("ascii")
+
+
+def _decrypt_auth_envelope(payload: str) -> Optional[dict]:
+    cipher = _auth_cipher()
+    if cipher is None or not payload:
+        return None
+    try:
+        obj = json.loads(cipher.decrypt(str(payload).encode("ascii")).decode("utf-8"))
+        if not isinstance(obj, dict) or not isinstance(obj.get("credentials"), dict):
+            return None
+        return obj
+    except Exception:
+        return None
+
+
+def _queue_auth_store(operation: str, payload: Optional[str] = None):
+    st.session_state["_gdrive_persist_pending"] = {"operation": operation, "payload": payload}
+    st.session_state.pop("_gdrive_persist_request", None)
+
+
+def _queue_credentials_persist():
+    payload = _encrypt_auth_envelope()
+    if payload:
+        _queue_auth_store("write", payload)
+
+
+def initialize_persistent_auth():
+    """Restore/persist encrypted Google credentials across Streamlit sessions.
+
+    The browser only stores an encrypted envelope.  A new page/query session on
+    the same Streamlit app origin can therefore hydrate credentials before
+    Buku Kerja loads, while the encryption key remains in Streamlit Secrets.
+    """
+    if not cloud_enabled() or _auth_bridge is None or Fernet is None:
+        return
+
+    state = st.session_state
+    pending = state.get("_gdrive_persist_pending")
+    hydrated = bool(state.get("_gdrive_persist_hydrated"))
+    if pending:
+        desired = dict(pending)
+    elif not hydrated:
+        desired = {"operation": "read", "payload": None}
+    else:
+        return
+
+    request = state.get("_gdrive_persist_request")
+    if not isinstance(request, dict) or request.get("operation") != desired.get("operation") or request.get("payload") != desired.get("payload"):
+        request = {
+            "id": str(uuid.uuid4()),
+            "operation": desired["operation"],
+            "payload": desired.get("payload"),
+        }
+        state["_gdrive_persist_request"] = request
+
+    result = _auth_bridge(
+        key=_AUTH_COMPONENT_KEY,
+        data=request,
+        default={"result": None},
+        height=1,
+        on_result_change=lambda: None,
+    ).result
+
+    if not isinstance(result, dict) or result.get("id") != request["id"]:
+        st.stop()
+    if not result.get("ok"):
+        # Do not block the app forever if browser storage is unavailable.
+        state["_gdrive_persist_hydrated"] = True
+        state.pop("_gdrive_persist_request", None)
+        state.pop("_gdrive_persist_pending", None)
+        return
+
+    operation = request["operation"]
+    if operation == "read":
+        envelope = _decrypt_auth_envelope(result.get("value") or "")
+        if envelope:
+            creds = dict(envelope.get("credentials") or {})
+            # Always use the current OAuth client secret from Streamlit Secrets.
+            creds["client_id"] = str(_cfg().get("client_id") or creds.get("client_id") or "")
+            creds["client_secret"] = str(_cfg().get("client_secret") or "")
+            creds["token_uri"] = "https://oauth2.googleapis.com/token"
+            state["_gdrive_credentials"] = creds
+            user = envelope.get("user")
+            if isinstance(user, dict) and user:
+                state["_gdrive_user"] = user
+        state["_gdrive_persist_hydrated"] = True
+    elif operation in ("write", "clear"):
+        state["_gdrive_persist_hydrated"] = True
+        state.pop("_gdrive_persist_pending", None)
+
+    state.pop("_gdrive_persist_request", None)
+
+
 def authorization_url() -> Optional[str]:
     if not cloud_enabled() or not _libs_available():
         return None
@@ -131,7 +295,7 @@ def authorization_url() -> Optional[str]:
 
 
 def _serialize_credentials(creds) -> dict:
-    return {
+    info = {
         "token": creds.token,
         "refresh_token": creds.refresh_token,
         "token_uri": creds.token_uri,
@@ -139,6 +303,9 @@ def _serialize_credentials(creds) -> dict:
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes or SCOPES),
     }
+    if getattr(creds, "expiry", None):
+        info["expiry"] = creds.expiry.isoformat()
+    return info
 
 
 def _credentials():
@@ -150,6 +317,7 @@ def _credentials():
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             st.session_state["_gdrive_credentials"] = _serialize_credentials(creds)
+            _queue_credentials_persist()
         return creds
     except Exception as exc:
         st.session_state["_gdrive_auth_error"] = f"Sesi Google Drive perlu dihubungkan ulang: {exc}"
@@ -430,7 +598,8 @@ class RemotePath:
 
 
 def handle_oauth_callback() -> bool:
-    """Process a Google OAuth callback before normal page routing."""
+    """Restore browser auth, then process a Google OAuth callback."""
+    initialize_persistent_auth()
     if not cloud_enabled() or not _libs_available():
         return False
     try:
@@ -475,6 +644,7 @@ def handle_oauth_callback() -> bool:
             st.session_state["_gdrive_user"] = about
             _ensure_path_folders(service, [])
             st.session_state["_gdrive_just_connected"] = True
+            _queue_credentials_persist()
         except Exception as exc:
             st.session_state["_gdrive_auth_error"] = f"Login Google Drive belum berhasil: {exc}"
     # Never leave OAuth authorization codes in the browser URL.
@@ -506,11 +676,13 @@ def user_info() -> dict:
 def disconnect() -> bool:
     if _pending() and not flush_pending():
         return False
+    # Clear runtime Google state, but keep the transport keys long enough for
+    # the next rerun to remove the encrypted browser credential envelope.
     for key in list(st.session_state):
-        if key.startswith("_gdrive_"):
+        if key.startswith("_gdrive_") and not key.startswith("_gdrive_persist_"):
             del st.session_state[key]
+    _queue_auth_store("clear", None)
     return True
-
 
 def force_refresh_cache(*, discard_pending: bool = False):
     if _pending() and not discard_pending and not flush_pending():
