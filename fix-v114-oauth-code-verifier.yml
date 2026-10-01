@@ -1,0 +1,66 @@
+name: Fix V36.4.114 Google OAuth Code Verifier
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-oauth:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fix OAuth PKCE handling for Streamlit web flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('google_drive_storage.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_authorize = 'flow = Flow.from_client_config(_client_config(), scopes=SCOPES)'
+          new_authorize = 'flow = Flow.from_client_config(_client_config(), scopes=SCOPES, autogenerate_code_verifier=False)'
+
+          old_callback = 'flow = Flow.from_client_config(_client_config(), scopes=SCOPES, state=str(state))'
+          new_callback = 'flow = Flow.from_client_config(_client_config(), scopes=SCOPES, state=str(state), autogenerate_code_verifier=False)'
+
+          if new_authorize in text and new_callback in text:
+              print('OAuth code verifier fix already installed.')
+              raise SystemExit(0)
+
+          if text.count(old_authorize) != 1:
+              raise SystemExit(f'Safety check failed: authorization flow pattern count={text.count(old_authorize)}')
+          if text.count(old_callback) != 1:
+              raise SystemExit(f'Safety check failed: callback flow pattern count={text.count(old_callback)}')
+
+          text = text.replace(old_authorize, new_authorize, 1)
+          text = text.replace(old_callback, new_callback, 1)
+          path.write_text(text, encoding='utf-8')
+          print('OAuth PKCE mismatch fixed.')
+          PY
+
+          python -m py_compile google_drive_storage.py app.py
+
+      - name: Commit OAuth fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add google_drive_storage.py
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Fix Google OAuth missing code verifier"
+          git push
