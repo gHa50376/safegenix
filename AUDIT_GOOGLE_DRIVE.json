@@ -1,0 +1,41 @@
+{
+  "baseline": "D-Safe V36.4.113 FINAL",
+  "target": "V36.4.114 Google Drive Test",
+  "original_file_count": 123,
+  "unchanged_original_files": 121,
+  "changed_original_files": [
+    "app.py",
+    "requirements.txt"
+  ],
+  "added_files": [
+    ".streamlit/secrets.toml.example",
+    "GOOGLE_DRIVE_SETUP.md",
+    "Jalankan_D-Safe_GoogleDrive_Windows.bat",
+    "README_V36.4.114.md",
+    "UJI_BESOK_DARI_PC.txt",
+    "google_drive_storage.py"
+  ],
+  "removed_files": [],
+  "checks": {
+    "ast_parse": true,
+    "only_expected_original_files_changed": true,
+    "no_original_files_removed": true,
+    "templates_unchanged": true,
+    "html_reference_files_unchanged": true,
+    "google_settings_card_once": true,
+    "pdf_drive_action_once": true,
+    "dsafe_admin_action_once": true,
+    "safety_admin_action_once": true,
+    "narrow_drive_scope_only": true,
+    "resumable_upload_enabled": true,
+    "revision_conflict_guard": true,
+    "user_tokens_session_only": true,
+    "no_embedded_google_credentials": true
+  },
+  "external_e2e_pending": [
+    "Google OAuth consent/login with real client",
+    "real Google Drive read/write",
+    "real Admin share reception",
+    "Streamlit Community Cloud deployment"
+  ]
+}

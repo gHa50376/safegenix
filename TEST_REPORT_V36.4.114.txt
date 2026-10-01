@@ -1,0 +1,30 @@
+D-SAFE V36.4.114 GOOGLE DRIVE TEST
+Basis: V36.4.113 FINAL
+
+PEMERIKSAAN SEBELUM PAKET
+[OK] app.py dan google_drive_storage.py lolos py_compile/AST parse.
+[OK] 121 file asli tidak berubah.
+[OK] Hanya app.py dan requirements.txt dari file asli yang berubah.
+[OK] Semua template/ PPT sumber tidak berubah.
+[OK] Semua HTML referensi tidak berubah.
+[OK] Tidak ada client secret, access token, atau refresh token nyata di paket.
+[OK] Google Drive memakai scope drive.file (bukan akses penuh ke Drive).
+[OK] Upload besar memakai resumable upload.
+[OK] Ada pemeriksaan konflik revisi lintas perangkat.
+[OK] PDF hanya dapat disimpan ke Drive pengguna.
+[OK] PPT D-Safe dan Safety Talk dapat disimpan ke Drive pengguna dan dikirim ke Admin.
+[OK] Reset + Cadangkan tetap memakai filter Tanggal/Bulan/Tahun dan format ZIP lama.
+
+PENGUJIAN NYATA YANG MASIH HARUS DILAKUKAN
+1. OAuth login dengan Google Cloud Client ID nyata.
+2. Simpan kegiatan lalu buka ulang dengan akun yang sama.
+3. Login dari perangkat kedua dan pastikan data akun yang sama muncul.
+4. Pastikan akun berbeda tidak melihat data pengguna pertama.
+5. Simpan PDF Buku Kerja ke Drive.
+6. Simpan dan kirim PPT D-Safe ke Admin.
+7. Simpan dan kirim PPT Safety Talk ke Admin.
+8. Periksa akun Admin > Shared with me.
+9. Uji Reset+Cadangkan dan Pulihkan Cadangan.
+10. Uji konflik sederhana HP/PC.
+
+BACA GOOGLE_DRIVE_SETUP.md SEBELUM DEPLOY.

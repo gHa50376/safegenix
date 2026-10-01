@@ -1,0 +1,54 @@
+UJI BESOK — D-SAFE V36.4.114 GOOGLE DRIVE
+
+A. SEKALI SAJA: GOOGLE CLOUD
+1. Buka Google Cloud Console.
+2. Buat/pilih project D-Safe.
+3. Aktifkan Google Drive API.
+4. Atur OAuth consent screen.
+5. Buat OAuth Client ID jenis Web application.
+6. Authorized redirect URI untuk uji lokal:
+   http://localhost:8501/
+7. Jika aplikasi OAuth masih Testing, masukkan akun Google pengguna yang akan diuji sebagai Test user.
+8. Catat Client ID dan Client Secret.
+
+B. SIAPKAN FILE
+1. Ekstrak ZIP V36.4.114 ke folder baru.
+2. Masuk ke folder .streamlit.
+3. Salin secrets.toml.example menjadi secrets.toml.
+4. Isi:
+   client_id
+   client_secret
+   redirect_uri = "http://localhost:8501/"
+   state_secret = teks acak panjang
+   admin_email = email akun Admin
+5. Jangan unggah secrets.toml ke GitHub.
+
+C. JALANKAN
+Klik dua kali:
+Jalankan_D-Safe_GoogleDrive_Windows.bat
+
+D. PENGUJIAN UTAMA
+1. Pengaturan > Penyimpanan Google Drive > Hubungkan Google Drive.
+2. Login akun pengguna pertama.
+3. Input satu kegiatan Buku Kerja dan simpan.
+4. Tutup tab, buka ulang aplikasi, hubungkan akun yang sama, periksa data muncul.
+5. Cetak Buku Kerja > Simpan ke Drive Saya.
+6. Generate D-Safe > Simpan ke Drive Saya > Kirim ke Admin.
+7. Generate Safety Talk > Simpan ke Drive Saya > Kirim ke Admin.
+8. Login akun Admin di drive.google.com > Shared with me. Pastikan hanya PPT yang dikirim muncul.
+9. Uji akun pengguna kedua. Data pengguna pertama tidak boleh muncul.
+10. Uji Reset dan Cadangkan Tanggal/Bulan/Tahun, lalu Pulihkan Cadangan.
+
+E. STRUKTUR DRIVE PENGGUNA YANG DIHARAPKAN
+D-Safe/
+  Data/
+  Draft/
+  Output Buku Kerja/
+  Output D-Safe/
+  Output Safety Talk/
+  Cadangan/
+  Terkirim ke Admin/
+
+CATATAN
+Akun Admin pada versi uji menerima file di "Shared with me" sebagai pembaca.
+File yang dikirim adalah salinan PPT khusus; Buku Kerja/foto/TTD/draft tidak dibagikan.
