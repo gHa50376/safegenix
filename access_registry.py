@@ -209,3 +209,45 @@ def require_approved_user(gdrive):
     if c2.button("Ganti Akun Google",use_container_width=True):
         if gdrive.disconnect(): st.rerun()
     st.stop()
+
+
+def submit_access_profile(email: str, name: str, station: str, photo: str = ""):
+    """Create/update the user's identity without allowing the user app to self-approve."""
+    target = str(email or "").strip().lower()
+    name = str(name or "").strip()
+    station = str(station or "").strip()
+    if not target or not name or not station:
+        raise ValueError("Email Google, Nama Pengguna, dan Nama Stasiun wajib tersedia.")
+    for attempt in range(2):
+        registry, sha = read_registry()
+        now = datetime.now(JAKARTA).isoformat(timespec="seconds")
+        found = None
+        for row in registry.get("users", []):
+            if isinstance(row, dict) and _email(row) == target:
+                found = row
+                break
+        if found is None:
+            found = {
+                "email": target,
+                "status": "PENDING",
+                "active": False,
+                "requested_at": now,
+                "note": "Permintaan akses dari Pengaturan SAFEGENIX",
+            }
+            registry.setdefault("users", []).append(found)
+        # Identity may be updated by the user, but an Admin decision is preserved.
+        found["name"] = name
+        found["station"] = station
+        found["photo"] = str(photo or found.get("photo") or "")
+        found["updated_at"] = now
+        if _status(found) == "PENDING" and not found.get("requested_at"):
+            found["requested_at"] = now
+        registry["updated_at"] = now
+        try:
+            _write_registry(registry, sha, f"SAFEGENIX profile/access request: {target}")
+            return found, _status(found)
+        except RuntimeError as exc:
+            if attempt == 0 and "409" in str(exc):
+                continue
+            raise
+    return found, _status(found)
