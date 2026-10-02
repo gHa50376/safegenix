@@ -28,6 +28,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 import streamlit as st
 import streamlit.components.v1 as components
 import google_drive_storage as gdrive
+import access_registry
 from PIL import Image, ImageOps
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -55,69 +56,29 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Google OAuth callback is handled before normal D-Safe navigation.
-# V36.4.115+ requires Google Drive login before any application data/UI is opened.
+# Google OAuth callback is handled globally, but SAFEGENIX no longer hard-locks
+# the Beranda. Authentication and access requests are completed from Pengaturan.
 gdrive.handle_oauth_callback()
 
-def _require_google_drive_login_v115():
-    """Hard gate: no D-Safe page or data is available before Google login."""
-    if gdrive.connected():
-        return
+def _safegenix_access_state_v116():
+    """Return (allowed, record, status, error) without stopping the Beranda."""
+    if not gdrive.connected():
+        return False, None, "SIGNED_OUT", None
+    info = gdrive.user_info() or {}
+    email = str(info.get("emailAddress") or "").strip().lower()
+    if not email:
+        return False, None, "IDENTITY_MISSING", None
+    try:
+        row, status = access_registry.get_user(email)
+        if status == "ACTIVE" and row:
+            if not str(row.get("name") or "").strip() or not str(row.get("station") or "").strip():
+                return False, row, "PROFILE_REQUIRED", None
+        return status == "ACTIVE", row, status, None
+    except Exception as exc:
+        return False, None, "ERROR", str(exc)
 
-    st.markdown(
-        """
-        <style>
-        html, body, [data-testid="stAppViewContainer"] {
-            background:
-              radial-gradient(circle at 88% 8%, rgba(183,220,255,.65), transparent 24%),
-              radial-gradient(circle at 8% 92%, rgba(210,232,255,.55), transparent 25%),
-              linear-gradient(135deg,#f7fbff 0%,#edf6ff 52%,#f9fcff 100%) !important;
-        }
-        .block-container{max-width:720px;padding-top:10vh!important;}
-        .dsafe-login-lock{
-            padding:28px 24px 24px;border:1px solid #d4e5f5;border-radius:24px;
-            background:rgba(255,255,255,.96);box-shadow:0 18px 55px rgba(28,78,125,.12);
-            text-align:center;
-        }
-        .dsafe-login-mark{
-            width:64px;height:64px;margin:0 auto 14px;border-radius:20px;
-            display:flex;align-items:center;justify-content:center;
-            background:linear-gradient(145deg,#0d63d8,#66afea);color:#fff;
-            font-size:30px;font-weight:900;box-shadow:0 10px 24px rgba(20,102,216,.25);
-        }
-        .dsafe-login-title{font-size:1.35rem;font-weight:900;color:#173f70;margin-bottom:6px;}
-        .dsafe-login-copy{font-size:.86rem;line-height:1.5;color:#607b94;margin:0 auto 16px;max-width:520px;}
-        </style>
-        <div class="dsafe-login-lock">
-          <div class="dsafe-login-mark">▮▮</div>
-          <div class="dsafe-login-title">SAFEGENIX</div>
-          <div class="dsafe-login-copy">
-            Aplikasi terkunci. Hubungkan akun Google Drive untuk membuka Buku Kerja,
-            D-Safe, Safety Talk, Dashboard Kinerja, dan Pengaturan.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    auth_error = st.session_state.pop("_gdrive_auth_error", None)
-    if auth_error:
-        st.error(auth_error)
-
-    if not gdrive.cloud_enabled():
-        st.error("Google Drive belum dikonfigurasi pada server aplikasi.")
-        st.stop()
-
-    auth_url = gdrive.authorization_url()
-    if auth_url:
-        st.link_button("🔐 Masuk dengan Google Drive", auth_url, use_container_width=True)
-        st.caption("Data aplikasi dibuka setelah login berhasil. Aplikasi memakai izin Drive terbatas untuk file D-Safe.")
-    else:
-        st.error("Login Google Drive belum tersedia. Periksa konfigurasi OAuth aplikasi.")
-
-    st.stop()
-
-_require_google_drive_login_v115()
+def _safegenix_allowed_v116():
+    return _safegenix_access_state_v116()[0]
 
 st.markdown("""
 <style>
@@ -2974,6 +2935,25 @@ div[data-testid="stRadio"] label:has(input:checked),[data-baseweb="tab"][aria-se
   border:1px solid #a9c9e8 !important;border-radius:16px !important;
   box-shadow:0 18px 48px rgba(16,45,76,.28) !important;
 }
+/* V36.4.117: dialog content must never overlap its action buttons. */
+[data-testid="stDialog"] [role="dialog"] > div{
+  height:auto !important;min-height:0 !important;overflow:visible !important;
+}
+[data-testid="stDialog"] [role="dialog"] [data-testid="stVerticalBlock"]{
+  gap:.85rem !important;
+}
+[data-testid="stDialog"] [role="dialog"] p{
+  margin:0 0 .45rem 0 !important;line-height:1.5 !important;
+}
+[data-testid="stDialog"] [role="dialog"] .stButton{
+  position:relative !important;margin-top:.35rem !important;clear:both !important;
+}
+@media(max-width:760px){
+  [data-testid="stDialog"] [role="dialog"]{
+    width:calc(100vw - 24px) !important;max-width:420px !important;
+  }
+  [data-testid="stDialog"] [role="dialog"] [data-testid="stVerticalBlock"]{gap:.7rem !important;}
+}
 /* V36.4.89: each Dinas selector stays directly above its matching photo. */
 [class*="st-key-bk_shsp_pairs_v36489"] [data-testid="stHorizontalBlock"]{
   display:grid !important;grid-template-columns:repeat(3,minmax(0,1fr)) !important;
@@ -5596,7 +5576,11 @@ def _activity_master(data):
                                   on_click=_queue_delete_v36490,args=('activity',a['id']))
 
 def _navigate_v36458(target, book_view=None):
-    """Native button navigation, preserving Streamlit's current browser session."""
+    """Native navigation. Beranda stays public; protected areas route to Pengaturan."""
+    if target not in ('Beranda','Pengaturan') and not _safegenix_allowed_v116():
+        st.session_state['_safegenix_login_notice_v116'] = True
+        target = 'Pengaturan'
+        book_view = None
     st.query_params.clear()
     st.query_params['nav']=target
     st.session_state['main_nav_v340']=target
@@ -6710,6 +6694,68 @@ def _confirm_book_restore():
 
 def render_settings_v341():
     data=load_book_data(); st.markdown("<div class='app-theme-bar'><div class='app-brand'><div class='app-brand-mark'>⚙</div><div><div class='app-brand-title'>Pengaturan</div><div class='app-brand-sub'>Master data tanpa PIN</div></div></div><div class='app-status'>● Kegiatan sistem terkunci</div></div>",unsafe_allow_html=True)
+
+    # V36.4.116 — login and Admin approval live in Pengaturan; Beranda remains public.
+    if st.session_state.pop('_safegenix_login_notice_v116', False):
+        @st.dialog('Login diperlukan')
+        def _login_notice_v116():
+            st.write('Untuk membuka fungsi SAFEGENIX, lengkapi identitas dan login Google pada menu Pengaturan.')
+            if st.button('Lanjutkan ke Pengaturan', use_container_width=True, type='primary'):
+                st.rerun()
+        _login_notice_v116()
+
+    st.markdown('### Akses SAFEGENIX')
+    allowed, registry_row, access_status, access_error = _safegenix_access_state_v116()
+    if not gdrive.connected():
+        st.info('Beranda dapat dilihat tanpa login. Untuk menggunakan fungsi SAFEGENIX, masuk dengan Google lalu lengkapi Nama Pengguna dan Nama Stasiun.')
+        auth_url = gdrive.authorization_url() if gdrive.cloud_enabled() else None
+        if auth_url:
+            st.link_button('🔐 Masuk dengan Google', auth_url, use_container_width=True)
+        elif not gdrive.cloud_enabled():
+            st.error('Google Drive belum dikonfigurasi pada server aplikasi.')
+    else:
+        ginfo = gdrive.user_info() or {}
+        gemail = str(ginfo.get('emailAddress') or '').strip().lower()
+        st.caption(f'Akun Google: {gemail or "Identitas belum tersedia"}')
+        profile = data.get('user_profile') or {}
+        station_value = str(data.get('station') or '').strip()
+        station_plain = station_value[8:].strip() if station_value.upper().startswith('STASIUN ') else station_value
+        with st.form('safegenix_access_identity_v116'):
+            access_name = st.text_input('Nama Pengguna *', value=str(profile.get('name') or registry_row.get('name') if registry_row else profile.get('name') or ''))
+            access_station = st.text_input('Nama Stasiun *', value=station_plain or (str(registry_row.get('station') or '') if registry_row else ''))
+            submit_access = st.form_submit_button('Simpan Identitas & Kirim Permintaan Akses' if not allowed else 'Simpan Identitas', use_container_width=True, type='primary')
+        if submit_access:
+            name_val = access_name.strip(); station_val = access_station.strip()
+            station_val = station_val[8:].strip() if station_val.upper().startswith('STASIUN ') else station_val
+            if not name_val or not station_val:
+                st.warning('Nama Pengguna dan Nama Stasiun wajib diisi.')
+            elif not gemail:
+                st.error('Identitas Gmail Google belum tersedia. Silakan login ulang.')
+            else:
+                profile2 = dict(profile); profile2['name'] = name_val
+                data['user_profile'] = profile2
+                data['station'] = ('STASIUN ' + station_val).upper()
+                save_book_data(data)
+                try:
+                    access_registry.submit_access_profile(gemail, name_val, station_val, str(ginfo.get('photoLink') or ''))
+                    st.success('Identitas tersimpan.' if allowed else 'Permintaan akses sudah dikirim ke Admin.')
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f'Identitas tersimpan, tetapi Registry belum dapat diperbarui: {exc}')
+        if access_error:
+            st.error(f'Registry belum dapat diperiksa: {access_error}')
+        elif allowed:
+            st.success('Akses aktif. SAFEGENIX siap digunakan.')
+        elif access_status == 'PENDING':
+            st.warning('Menunggu persetujuan Admin.')
+            if st.button('↻ Cek Status Persetujuan', key='settings_access_check_v116', use_container_width=True): st.rerun()
+        elif access_status == 'DISABLED':
+            st.warning('Akses akun ini sedang dinonaktifkan oleh Admin.')
+        else:
+            st.caption('Setelah identitas disimpan, permintaan akan muncul otomatis di SAFEGENIX Admin.')
+        if st.button('Ganti / Putuskan Akun Google', key='settings_access_disconnect_v116', use_container_width=True):
+            if gdrive.disconnect(): st.rerun()
+    st.divider()
     backup_error=st.session_state.pop('settings_backup_error_v105',None)
     if backup_error:
         st.error(backup_error)
@@ -6944,6 +6990,13 @@ if _url_nav in allowed_nav:
 elif 'main_nav_v340' not in st.session_state:
     st.session_state['main_nav_v340'] = 'Beranda'
 nav = st.session_state.get('main_nav_v340','Beranda')
+
+# Direct URLs to protected pages follow the same rule as Beranda card clicks.
+if nav not in ('Beranda','Pengaturan') and not _safegenix_allowed_v116():
+    st.session_state['_safegenix_login_notice_v116'] = True
+    st.session_state['main_nav_v340'] = 'Pengaturan'
+    st.query_params.clear(); st.query_params['nav'] = 'Pengaturan'
+    nav = 'Pengaturan'
 
 if nav == 'Beranda':
     st.markdown('<style>.stApp::before{display:none !important;}</style>',unsafe_allow_html=True)
