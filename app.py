@@ -28,6 +28,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 import streamlit as st
 import streamlit.components.v1 as components
 import google_drive_storage as gdrive
+import access_registry
 from PIL import Image, ImageOps
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -62,6 +63,8 @@ gdrive.handle_oauth_callback()
 def _require_google_drive_login_v115():
     """Hard gate: no D-Safe page or data is available before Google login."""
     if gdrive.connected():
+        # SAFEGENIX access gate: Google identity must also be approved by Admin.
+        access_registry.require_approved_user(gdrive)
         return
 
     st.markdown(
