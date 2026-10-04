@@ -6710,6 +6710,9 @@ def render_settings_v341():
         _login_notice_v116()
 
     st.markdown('### Akses SAFEGENIX')
+    auth_error = st.session_state.pop('_gdrive_auth_error', None)
+    if auth_error:
+        st.error(auth_error)
     access_flash = st.session_state.pop('_safegenix_access_flash_v118', None)
     if access_flash:
         st.success(access_flash)

@@ -658,12 +658,19 @@ def handle_oauth_callback() -> bool:
     try:
         code = st.query_params.get("code")
         state = st.query_params.get("state")
+        oauth_error = st.query_params.get("error")
     except Exception:
         return False
-    if not code:
+    if not code and not oauth_error:
         return False
     if not state or not _valid_state(str(state)):
         st.session_state["_gdrive_auth_error"] = "Login Google ditolak karena state OAuth tidak valid atau kedaluwarsa. Silakan hubungkan kembali."
+    elif oauth_error:
+        st.session_state["_gdrive_auth_error"] = (
+            "Login Google belum berhasil karena persetujuan akses tidak diberikan. Silakan masuk kembali jika ingin menghubungkan Google Drive."
+            if str(oauth_error) == "access_denied"
+            else "Login Google belum berhasil. Silakan coba masuk kembali dari Pengaturan."
+        )
     else:
         try:
             flow = Flow.from_client_config(_client_config(), scopes=SCOPES, state=str(state), autogenerate_code_verifier=False)
@@ -702,7 +709,7 @@ def handle_oauth_callback() -> bool:
             st.session_state["_gdrive_auth_error"] = f"Login Google Drive belum berhasil: {exc}"
     # Never leave OAuth authorization codes in the browser URL.
     try:
-        for key in ("code", "state", "scope", "authuser", "prompt", "hd"):
+        for key in ("code", "state", "scope", "authuser", "prompt", "hd", "error", "error_description", "error_uri"):
             if key in st.query_params:
                 del st.query_params[key]
         st.query_params["nav"] = "Pengaturan"
