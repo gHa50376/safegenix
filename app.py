@@ -7096,6 +7096,11 @@ if nav == 'Beranda':
     .block-container > [data-testid="stVerticalBlock"]{
       gap:.42rem !important;
     }
+    .block-container [data-testid="stMarkdownContainer"]:has(> .home-shell),
+    .st-key-home_native_grid_v115 [data-testid="stMarkdownContainer"]:has(> .home-card-shell),
+    .block-container [data-testid="stMarkdownContainer"]:has(> .home-footer){
+      margin:0 !important;
+    }
     .st-key-home_native_grid_v115{
       margin:.25rem 0 .25rem !important;
       padding:0 !important;
