@@ -2936,6 +2936,11 @@ div[data-testid="stRadio"] label:has(input:checked),[data-baseweb="tab"][aria-se
   box-shadow:0 18px 48px rgba(16,45,76,.28) !important;
 }
 /* V36.4.117: dialog content must never overlap its action buttons. */
+body:has([data-testid="stDialog"] [role="dialog"]) .home-float,
+body:has([data-testid="stDialog"] [role="dialog"]) .settings-float,
+body:has([data-testid="stDialog"] [role="dialog"]) .st-key-home_native_settings_click_v115{
+  visibility:hidden !important;pointer-events:none !important;
+}
 [data-testid="stDialog"] [role="dialog"] > div{
   height:auto !important;min-height:0 !important;overflow:visible !important;
 }
@@ -6705,6 +6710,9 @@ def render_settings_v341():
         _login_notice_v116()
 
     st.markdown('### Akses SAFEGENIX')
+    access_flash = st.session_state.pop('_safegenix_access_flash_v118', None)
+    if access_flash:
+        st.success(access_flash)
     allowed, registry_row, access_status, access_error = _safegenix_access_state_v116()
     if not gdrive.connected():
         st.info('Beranda dapat dilihat tanpa login. Untuk menggunakan fungsi SAFEGENIX, masuk dengan Google lalu lengkapi Nama Pengguna dan Nama Stasiun.')
@@ -6723,46 +6731,32 @@ def render_settings_v341():
         with st.form('safegenix_access_identity_v116'):
             access_name = st.text_input('Nama Pengguna *', value=str(profile.get('name') or registry_row.get('name') if registry_row else profile.get('name') or ''))
             access_station = st.text_input('Nama Stasiun *', value=station_plain or (str(registry_row.get('station') or '') if registry_row else ''))
+            access_nipp = st.text_input('NIPP *', value=str(profile.get('nipp') or ''))
             submit_access = st.form_submit_button('Simpan Identitas & Kirim Permintaan Akses' if not allowed else 'Simpan Identitas', use_container_width=True, type='primary')
         if submit_access:
             name_val = access_name.strip(); station_val = access_station.strip()
             station_val = station_val[8:].strip() if station_val.upper().startswith('STASIUN ') else station_val
-            if not name_val or not station_val:
-                st.warning('Nama Pengguna dan Nama Stasiun wajib diisi.')
+            if not name_val or not station_val or not access_nipp.strip():
+                st.warning('Nama Pengguna, Nama Stasiun, dan NIPP wajib diisi.')
             elif not gemail:
                 st.error('Identitas Gmail Google belum tersedia. Silakan login ulang.')
             else:
-    profile2 = dict(profile)
-    profile2['name'] = name_val
-    data['user_profile'] = profile2
-    data['station'] = ('STASIUN ' + station_val).upper()
-
-    try:
-        written_row, written_status = access_registry.submit_access_profile(
-            gemail,
-            name_val,
-            station_val,
-            str(ginfo.get('photoLink') or '')
-        )
-
-        if not written_row or str(written_row.get('email') or '').strip().lower() != gemail:
-            raise RuntimeError(
-                'Registry tidak mengembalikan akun Google yang dikirim.'
-            )
-
-        save_book_data(data)
-
-        st.success(
-            'Permintaan akses sudah tercatat di Registry.'
-            if written_status == 'PENDING'
-            else 'Identitas tersimpan.'
-        )
-        st.rerun()
-
-    except Exception as exc:
-        st.error(
-            f'Permintaan akses BELUM tercatat di Registry: {exc}'
-        )
+                profile2 = dict(profile); profile2['name'] = name_val
+                profile2['nipp'] = access_nipp.strip()
+                data['user_profile'] = profile2
+                data['station'] = ('STASIUN ' + station_val).upper()
+                try:
+                    written_row, written_status = access_registry.submit_access_profile(gemail, name_val, station_val, str(ginfo.get('photoLink') or ''))
+                    save_book_data(data)
+                    st.session_state['_safegenix_access_flash_v118'] = (
+                        'Identitas tersimpan. Akses akun tetap dinonaktifkan oleh Admin.' if written_status == 'DISABLED'
+                        else 'Identitas tersimpan. Akses aktif.' if written_status == 'ACTIVE'
+                        else 'Permintaan akses sudah tercatat dan menunggu persetujuan Admin.'
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f'Penyimpanan identitas dan permintaan akses belum selesai: {exc}')
+        if access_error:
             st.error(f'Registry belum dapat diperiksa: {access_error}')
         elif allowed:
             st.success('Akses aktif. SAFEGENIX siap digunakan.')

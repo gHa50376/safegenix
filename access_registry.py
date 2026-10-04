@@ -245,29 +245,14 @@ def submit_access_profile(email: str, name: str, station: str, photo: str = ""):
         registry["updated_at"] = now
         try:
             _write_registry(registry, sha, f"SAFEGENIX profile/access request: {target}")
-
-            # V36.4.118 — never report success until the exact Registry target
-            # confirms that the user record is actually present.
-            verify_registry, _ = read_registry()
-            verified = None
-            for verify_row in verify_registry.get("users", []):
-                if isinstance(verify_row, dict) and _email(verify_row) == target:
-                    verified = verify_row
-                    break
-            if verified is None:
-                c = _cfg()
-                raise RuntimeError(
-                    "Penulisan Registry tidak terverifikasi. "
-                    f"Akun {target} tidak ditemukan kembali pada "
-                    f"{c.get('repo')}/{c.get('branch')}:{c.get('path')}."
-                )
+            verified, status = get_user(target)
+            if verified is None or _email(verified) != target:
+                raise RuntimeError("Permintaan akses belum ditemukan saat Registry diperiksa kembali.")
             if str(verified.get("name") or "").strip() != name or str(verified.get("station") or "").strip() != station:
-                raise RuntimeError(
-                    "Penulisan Registry tidak terverifikasi: Nama/Stasiun yang dibaca kembali berbeda dari data yang dikirim."
-                )
-            return verified, _status(verified)
+                raise RuntimeError("Identitas di Registry berubah. Silakan simpan kembali.")
+            return verified, status
         except RuntimeError as exc:
             if attempt == 0 and "409" in str(exc):
                 continue
             raise
-    raise RuntimeError("Permintaan akses gagal ditulis ke Registry SAFEGENIX.")
+    return found, _status(found)
