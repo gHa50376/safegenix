@@ -6710,6 +6710,10 @@ def render_settings_v341():
         _login_notice_v116()
 
     st.markdown('### Akses SAFEGENIX')
+    if st.query_params.get('registry_debug') == '1':
+        registry_cfg = access_registry._cfg()
+        st.caption('Tujuan Registry (diagnosis)')
+        st.json({key: str(registry_cfg.get(key) or '') for key in ('repo', 'branch', 'path')})
     auth_error = st.session_state.pop('_gdrive_auth_error', None)
     if auth_error:
         st.error(auth_error)
