@@ -73,12 +73,20 @@ st.html("""
     try {
         const hostDocument = window.parent.document;
         const styleId = "safegenix-cloud-management-style";
-        if (!hostDocument.getElementById(styleId)) {
-            const style = hostDocument.createElement("style");
+        let style = hostDocument.getElementById(styleId);
+        if (!style) {
+            style = hostDocument.createElement("style");
             style.id = styleId;
-            style.textContent = '[data-testid="manage-app-button"] { display: none !important; }';
             hostDocument.head.appendChild(style);
         }
+        style.textContent = `
+            [data-testid="manage-app-button"],
+            a[class*="_viewerBadge_"],
+            [class*="_profilePreview_"]:has([data-testid="appCreatorAvatar"]),
+            iframe[title="Streamlit Cloud Status"] {
+                display: none !important;
+            }
+        `;
     } catch {
         // A host on another origin can retain its own management controls.
     }
@@ -7080,16 +7088,22 @@ if nav == 'Beranda':
     # failures on Streamlit Community Cloud while preserving the established UI.
     st.markdown("""
     <style>
-    .st-key-home_native_grid_v115{
-      margin:.95rem 0 .65rem !important;
-      padding:0 !important;
+    /* Home layout: remove empty style blocks from the flow and keep the
+       existing native navigation cards in two columns on desktop. */
+    .block-container > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] > style:only-child){
+      display:none !important;
     }
-    .st-key-home_native_grid_v115 > div[data-testid="stVerticalBlock"]{
+    .block-container > [data-testid="stVerticalBlock"]{
+      gap:.42rem !important;
+    }
+    .st-key-home_native_grid_v115{
+      margin:.25rem 0 .25rem !important;
+      padding:0 !important;
       display:grid !important;
       grid-template-columns:repeat(2,minmax(0,1fr)) !important;
-      gap:clamp(.8rem,1.1vw,1.25rem) !important;
+      gap:12px !important;
     }
-    .st-key-home_native_grid_v115 > div[data-testid="stVerticalBlock"] > div{
+    .st-key-home_native_grid_v115 > div{
       min-width:0 !important;
       margin:0 !important;
     }
@@ -7102,11 +7116,6 @@ if nav == 'Beranda':
       min-width:0 !important;
       margin:0 !important;
       padding:0 !important;
-    }
-    .st-key-home_native_book_v115 > div[data-testid="stVerticalBlock"],
-    .st-key-home_native_dashboard_v115 > div[data-testid="stVerticalBlock"],
-    .st-key-home_native_dsafe_v115 > div[data-testid="stVerticalBlock"],
-    .st-key-home_native_safety_v115 > div[data-testid="stVerticalBlock"]{
       gap:0 !important;
     }
     .st-key-home_native_book_click_v115,
@@ -7178,11 +7187,36 @@ if nav == 'Beranda':
       cursor:pointer !important;
       color:transparent !important;
     }
+    @media(min-width:901px){
+      .block-container{
+        width:100% !important;
+        max-width:1480px !important;
+        padding:.65rem 1rem .75rem !important;
+      }
+      .home-shell{margin:0 !important;}
+      .home-hero{
+        height:auto !important;
+        min-height:190px !important;
+        padding:1.1rem 1.7rem !important;
+      }
+      .hero-title{font-size:2.55rem !important;}
+      .hero-subtitle{font-size:.95rem !important;line-height:1.35 !important;}
+      .home-card-shell{
+        height:clamp(110px,17vh,128px) !important;
+        min-height:110px !important;
+        grid-template-columns:34% minmax(0,1fr) !important;
+      }
+      .home-card-image{height:100% !important;min-height:0 !important;}
+      .home-card-body{padding:.75rem 1rem !important;}
+      .home-card-title{font-size:1.15rem !important;margin-bottom:.3rem !important;}
+      .home-card-copy{font-size:.84rem !important;line-height:1.35 !important;}
+      .home-footer{font-size:.75rem !important;padding:.45rem .1rem !important;}
+    }
     @media(max-width:900px){
       .st-key-home_native_grid_v115{
         margin:.3rem 0 0 !important;
       }
-      .st-key-home_native_grid_v115 > div[data-testid="stVerticalBlock"]{
+      .st-key-home_native_grid_v115{
         grid-template-columns:1fr !important;
         gap:.32rem !important;
       }
@@ -7197,7 +7231,7 @@ if nav == 'Beranda':
       .st-key-home_native_grid_v115{
         margin-top:7px !important;
       }
-      .st-key-home_native_grid_v115 > div[data-testid="stVerticalBlock"]{
+      .st-key-home_native_grid_v115{
         gap:6px !important;
       }
     }
