@@ -20,8 +20,11 @@ def _cfg():
         c = dict(st.secrets.get("access_registry", {}) or {})
     except Exception:
         c = {}
-    # Safe project defaults; secrets may override all of these.
-    c.setdefault("repo", "gHa50376/dsafe-penyimpanan-perangkat")
+    # User requests and Admin decisions must use the same private registry.
+    # Migrate the old user-app destination while preserving custom deployments.
+    c.setdefault("repo", "gHa50376/safegenix-admin")
+    if str(c.get("repo") or "").strip().lower() == "gha50376/safegenix":
+        c["repo"] = "gHa50376/safegenix-admin"
     c.setdefault("branch", "registry")
     c.setdefault("path", "authorized_users.json")
     return c
