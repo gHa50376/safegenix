@@ -56,6 +56,37 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# Keep hosting controls out of SAFEGENIX's application interface.
+# This is static styling; no user data is passed to the browser script.
+st.html("""
+<style>
+[data-testid="stToolbar"], [data-testid="stAppToolbar"] {
+    display: none !important;
+}
+[data-testid="stElementContainer"]:has(#safegenix-hosting-controls-marker) {
+    display: none !important;
+}
+</style>
+<span id="safegenix-hosting-controls-marker" hidden></span>
+<script>
+(() => {
+    try {
+        const hostDocument = window.parent.document;
+        const styleId = "safegenix-cloud-management-style";
+        if (!hostDocument.getElementById(styleId)) {
+            const style = hostDocument.createElement("style");
+            style.id = styleId;
+            style.textContent = '[data-testid="manage-app-button"] { display: none !important; }';
+            hostDocument.head.appendChild(style);
+        }
+    } catch {
+        // A host on another origin can retain its own management controls.
+    }
+})();
+</script>
+""", unsafe_allow_javascript=True)
+
+
 # Google OAuth callback is handled globally, but SAFEGENIX no longer hard-locks
 # the Beranda. Authentication and access requests are completed from Pengaturan.
 gdrive.handle_oauth_callback()
