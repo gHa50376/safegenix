@@ -60,7 +60,7 @@ st.set_page_config(
 # This is static styling; no user data is passed to the browser script.
 st.html("""
 <style>
-[data-testid="stToolbar"], [data-testid="stAppToolbar"] {
+[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stAppToolbar"] {
     display: none !important;
 }
 [data-testid="stElementContainer"]:has(#safegenix-hosting-controls-marker) {
