@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets as pysecrets
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,7 @@ SCOPES = [
 ROOT_FOLDER = "D-Safe"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 _STATE_TTL_SECONDS = 15 * 60
+_SERVICE_CACHE_KEY = "_gdrive_runtime_service"
 
 # Persist only an encrypted OAuth credential envelope in this browser.  The
 # encryption key is derived from Streamlit Secrets and is never exposed to JS.
@@ -364,6 +366,7 @@ def _serialize_credentials(creds) -> dict:
 def _credentials():
     info = st.session_state.get("_gdrive_credentials")
     if not info or Credentials is None:
+        _clear_runtime_service()
         return None
     try:
         creds = Credentials.from_authorized_user_info(info, scopes=SCOPES)
@@ -373,6 +376,7 @@ def _credentials():
             _queue_credentials_persist()
         return creds
     except Exception as exc:
+        _clear_runtime_service()
         st.session_state["_gdrive_auth_error"] = f"Sesi Google Drive perlu dihubungkan ulang: {exc}"
         return None
 
@@ -381,11 +385,44 @@ def connected() -> bool:
     return _credentials() is not None
 
 
+def _clear_runtime_service():
+    """Drop this session's client without closing another active thread's HTTP."""
+    cached = st.session_state.pop(_SERVICE_CACHE_KEY, None)
+    if not isinstance(cached, dict):
+        return
+    owner = cached.get("thread")
+    if owner is not threading.current_thread() and owner is not None and owner.is_alive():
+        return
+    try:
+        service = cached.get("service")
+        if service is not None:
+            service.close()
+    except Exception:
+        pass
+
+
 def _service():
     creds = _credentials()
     if creds is None:
         raise RuntimeError("Google Drive belum terhubung.")
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    try:
+        cache_allowed = not st.get_option("runner.enforceSerializableSessionState")
+    except Exception:
+        cache_allowed = True
+    if not cache_allowed:
+        # A Drive client contains a live HTTP transport and is not serializable.
+        _clear_runtime_service()
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+    info = st.session_state.get("_gdrive_credentials") or {}
+    key = hashlib.sha256(json.dumps(info, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    owner = threading.current_thread()
+    cached = st.session_state.get(_SERVICE_CACHE_KEY)
+    if isinstance(cached, dict) and cached.get("key") == key and cached.get("thread") is owner:
+        return cached["service"]
+    _clear_runtime_service()
+    service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    st.session_state[_SERVICE_CACHE_KEY] = {"key": key, "thread": owner, "service": service}
+    return service
 
 
 def _cache() -> dict:
@@ -695,6 +732,8 @@ def handle_oauth_callback() -> bool:
             granted_scopes = set(creds.scopes or [])
             if "https://www.googleapis.com/auth/drive.file" not in granted_scopes:
                 raise RuntimeError("Izin drive.file tidak diberikan oleh Google. Silakan hubungkan ulang dan setujui akses Google Drive.")
+            _clear_runtime_service()
+            st.session_state.pop("_safegenix_access_lookup_cache", None)
             st.session_state["_gdrive_credentials"] = _serialize_credentials(creds)
             st.session_state.pop("_gdrive_auth_error", None)
             st.session_state.pop("_gdrive_sync_error", None)
@@ -736,6 +775,8 @@ def user_info() -> dict:
 def disconnect() -> bool:
     if _pending() and not flush_pending():
         return False
+    _clear_runtime_service()
+    st.session_state.pop("_safegenix_access_lookup_cache", None)
     # Clear runtime Google state, but keep the transport keys long enough for
     # the next rerun to remove the encrypted browser credential envelope.
     for key in list(st.session_state):

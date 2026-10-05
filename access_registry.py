@@ -7,12 +7,49 @@ the user app and SAFEGENIX Admin can share one source of truth.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from urllib import request, error
 import streamlit as st
 
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except ImportError:
+    get_script_run_ctx = None
+
 JAKARTA = timezone(timedelta(hours=7))
+_LOOKUP_CACHE_KEY = "_safegenix_access_lookup_cache"
+
+
+def clear_lookup_cache():
+    """Invalidate access lookups after a registry write or an explicit refresh."""
+    st.session_state.pop(_LOOKUP_CACHE_KEY, None)
+
+
+def _run_lookup_cache():
+    """Reuse lookups only during one interaction, including widget callbacks.
+
+    Streamlit 1.55 replaces widget_ids_this_run before callbacks on every rerun.
+    Its object identity therefore scopes this cache to the current execution;
+    there is no time-based permission cache. If that marker is unavailable,
+    every lookup goes directly to GitHub instead.
+    """
+    if get_script_run_ctx is None:
+        return None
+    try:
+        ctx = get_script_run_ctx(suppress_warning=True)
+        marker = getattr(ctx, "widget_ids_this_run", None)
+        if marker is None:
+            return None
+        cached = st.session_state.get(_LOOKUP_CACHE_KEY)
+        if not isinstance(cached, dict) or cached.get("run") is not marker:
+            cached = {"run": marker, "users": {}}
+            st.session_state[_LOOKUP_CACHE_KEY] = cached
+        return cached["users"]
+    except Exception:
+        return None
 
 
 def _cfg():
@@ -101,6 +138,7 @@ def read_registry():
 
 
 def _write_registry(registry, sha, message):
+    clear_lookup_cache()
     c=_cfg()
     body={
         "message": message,
@@ -126,12 +164,35 @@ def _status(row):
     return "PENDING"
 
 
-def get_user(email):
-    registry,_ = read_registry(); target=str(email).strip().lower()
-    for row in registry["users"]:
-        if isinstance(row,dict) and _email(row)==target:
-            return row, _status(row)
-    return None, "MISSING"
+def get_user(email, *, refresh=False):
+    target = str(email).strip().lower()
+    cache = _run_lookup_cache()
+    c = _cfg()
+    token_key = hashlib.sha256(_token().encode("utf-8")).hexdigest()
+    key = (str(c["repo"]), str(c["branch"]), str(c["path"]), token_key, target)
+    if refresh and cache is not None:
+        cache.pop(key, None)
+    if cache is not None and key in cache:
+        entry = cache[key]
+        if "error" in entry:
+            raise RuntimeError(entry["error"])
+        return deepcopy(entry["result"])
+    try:
+        # Keep read_registry uncached: writes, conflict retries and verification
+        # must always use the latest contents and SHA from GitHub.
+        registry, _ = read_registry()
+        result = (None, "MISSING")
+        for row in registry["users"]:
+            if isinstance(row, dict) and _email(row) == target:
+                result = (row, _status(row))
+                break
+    except Exception as exc:
+        if cache is not None:
+            cache[key] = {"error": str(exc)}
+        raise
+    if cache is not None:
+        cache[key] = {"result": deepcopy(result)}
+    return result
 
 
 def ensure_pending(email, name="", photo=""):
