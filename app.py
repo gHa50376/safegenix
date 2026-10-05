@@ -95,6 +95,11 @@ st.html("""
 """, unsafe_allow_javascript=True)
 
 
+# OAuth consent links are public and terminate before authentication or data access.
+from legal_pages import render_legal_page_if_requested, render_legal_footer
+if render_legal_page_if_requested():
+    st.stop()
+
 # Google OAuth callback is handled globally, but SAFEGENIX no longer hard-locks
 # the Beranda. Authentication and access requests are completed from Pengaturan.
 gdrive.handle_oauth_callback()
@@ -7270,6 +7275,7 @@ if nav == 'Beranda':
     st.button('Pengaturan',key='home_native_settings_click_v115',on_click=_navigate_v36458,args=('Pengaturan',))
 
     st.markdown("<div class='home-footer'><div class='kai-brand'><span class='kai-logo'><span class='kai-k'>K</span><span class='kai-a'>A</span><span class='kai-i'>I</span></span><span>PT. Kereta Api Indonesia (Persero)</span></div><div class='footer-tag'>Safe Today&nbsp;&nbsp;|&nbsp;&nbsp;Better Tomorrow</div></div>",unsafe_allow_html=True)
+    render_legal_footer()
     st.stop()
 
 st.button('⌂',key='nav_home_v58',on_click=_navigate_v36458,args=('Beranda',))
