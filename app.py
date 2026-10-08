@@ -109,7 +109,8 @@ def _current_drive_storage(module):
     required = {"refresh", "refresh_if_changed"}
     def current_api():
         return (required.issubset(signature(module.read_json).parameters)
-                and callable(getattr(module, 'render_login_button', None)))
+                and callable(getattr(module, 'render_login_button', None))
+                and getattr(module, '_LOGIN_BUTTON_RENDERER_VERSION', 0) == 2)
     if current_api():
         return module
     # A main-script update can precede invalidation of an imported module.

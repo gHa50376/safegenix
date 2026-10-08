@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import html
 import hmac
 import io
 import json
@@ -350,17 +349,33 @@ def authorization_url() -> Optional[str]:
     return url
 
 
+_LOGIN_BUTTON_RENDERER_VERSION = 2
+_google_login_link = st.components.v2.component(
+    'safegenix_google_login_link',
+    html=('<a class="safegenix-google-login-link" target="_top" rel="noreferrer" '
+          'style="display:flex;align-items:center;justify-content:center;'
+          'box-sizing:border-box;width:100%;min-height:42px;padding:.35rem .75rem;'
+          'border-radius:11px;font:inherit;font-weight:800;text-decoration:none;"></a>'),
+    js="""
+    export default function({data, parentElement}) {
+      const link = parentElement.querySelector('a.safegenix-google-login-link');
+      link.textContent = data.label;
+      link.href = data.url;
+      link.target = '_top';
+    }
+    """,
+    isolate_styles=False,
+)
+
+
 def render_login_button(label: str, url: str):
     """Open Google in the current top-level tab, including on Community Cloud."""
-    # st.link_button always opens a new tab. st.html preserves this explicit
-    # target, and _top keeps Google's account page outside the Cloud app iframe.
-    st.html(
-        '<a class="safegenix-google-login-link" '
-        f'href="{html.escape(url, quote=True)}" target="_top" rel="noreferrer" '
-        'style="display:flex;align-items:center;justify-content:center;'
-        'box-sizing:border-box;width:100%;min-height:42px;padding:.35rem .75rem;'
-        'border-radius:11px;font:inherit;font-weight:800;text-decoration:none;">'
-        f'{html.escape(label)}</a>'
+    # st.link_button opens a new tab; st.html strips the _top target. The v2
+    # component preserves it and keeps Google outside the Cloud app iframe.
+    _google_login_link(
+        data={"label": label, "url": url},
+        key='safegenix_google_login_' + hashlib.sha1(label.encode('utf-8')).hexdigest()[:12],
+        width='stretch', height='content',
     )
 
 
