@@ -110,7 +110,7 @@ def _current_drive_storage(module):
     def current_api():
         return (required.issubset(signature(module.read_json).parameters)
                 and callable(getattr(module, 'render_login_button', None))
-                and getattr(module, '_LOGIN_BUTTON_RENDERER_VERSION', 0) == 2)
+                and getattr(module, '_LOGIN_BUTTON_RENDERER_VERSION', 0) == 3)
     if current_api():
         return module
     # A main-script update can precede invalidation of an imported module.
@@ -3216,13 +3216,11 @@ st.markdown("""
   border-color:#53a59d !important;color:#194f4a !important;
 }
 [data-testid="stLinkButton"] a,
-.safegenix-google-login-link{
+[class*="st-key-safegenix_google_login_"] button{
   background:linear-gradient(135deg,#ffffff 0%,#edf6ff 24%,#99c8eb 64%,#4e91c9 100%) !important;
   border:1px solid #5a91be !important;color:#173f67 !important;
   box-shadow:inset 0 1px 0 #fff,0 3px 9px rgba(52,127,196,.17) !important;
 }
-.safegenix-google-login-link:hover{filter:brightness(1.04);}
-.safegenix-google-login-link:focus-visible{outline:2px solid #173f67;outline-offset:2px;}
 </style>
 """, unsafe_allow_html=True)
 

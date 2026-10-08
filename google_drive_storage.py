@@ -349,34 +349,29 @@ def authorization_url() -> Optional[str]:
     return url
 
 
-_LOGIN_BUTTON_RENDERER_VERSION = 2
-_google_login_link = st.components.v2.component(
-    'safegenix_google_login_link',
-    html=('<a class="safegenix-google-login-link" target="_top" rel="noreferrer" '
-          'style="display:flex;align-items:center;justify-content:center;'
-          'box-sizing:border-box;width:100%;min-height:42px;padding:.35rem .75rem;'
-          'border-radius:11px;font:inherit;font-weight:800;text-decoration:none;"></a>'),
-    js="""
-    export default function({data, parentElement}) {
-      const link = parentElement.querySelector('a.safegenix-google-login-link');
-      link.textContent = data.label;
-      link.href = data.url;
-      link.target = '_top';
-    }
-    """,
-    isolate_styles=False,
-)
+_LOGIN_BUTTON_RENDERER_VERSION = 3
 
 
 def render_login_button(label: str, url: str):
-    """Open Google in the current top-level tab, including on Community Cloud."""
-    # st.link_button opens a new tab; st.html strips the _top target. The v2
-    # component preserves it and keeps Google outside the Cloud app iframe.
-    _google_login_link(
-        data={"label": label, "url": url},
+    """Use Streamlit's authentication redirect in the current browser tab."""
+    if st.button(
+        label,
         key='safegenix_google_login_' + hashlib.sha1(label.encode('utf-8')).hexdigest()[:12],
-        width='stretch', height='content',
-    )
+        use_container_width=True,
+    ):
+        # Pinned Streamlit 1.55.0 uses this message for st.login/st.logout.
+        # Its frontend asks the same-origin Cloud host to redirect, because
+        # direct _top links are blocked by the host's iframe sandbox.
+        from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
+        from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
+        context = get_script_run_ctx()
+        if context is None:
+            st.error('Login Google belum dapat dibuka. Silakan muat ulang aplikasi.')
+            return
+        message = ForwardMsg()
+        message.auth_redirect.url = url
+        context.enqueue(message)
+        st.stop()
 
 
 def _serialize_credentials(creds) -> dict:
