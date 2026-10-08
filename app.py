@@ -100,6 +100,32 @@ from legal_pages import render_legal_page_if_requested, render_legal_footer
 if render_legal_page_if_requested():
     st.stop()
 
+def _current_drive_storage(module):
+    """Upgrade a cached Drive bridge before using the current book API."""
+    from importlib import reload
+    from inspect import signature
+    from threading import Lock
+
+    required = {"refresh", "refresh_if_changed"}
+    if required.issubset(signature(module.read_json).parameters):
+        return module
+    # A main-script update can precede invalidation of an imported module.
+    # Recheck under one process-wide lock; reload keeps session/auth data.
+    lock = vars(module).setdefault("_safegenix_api_upgrade_lock", Lock())
+    with lock:
+        if not required.issubset(signature(module.read_json).parameters):
+            module = reload(module)
+        if not required.issubset(signature(module.read_json).parameters):
+            raise RuntimeError("Versi penyimpanan Drive belum lengkap. Coba lagi setelah pembaruan selesai.")
+    return module
+
+
+try:
+    gdrive = _current_drive_storage(gdrive)
+except Exception as exc:
+    st.error(f"Penyimpanan Drive belum siap: {exc}")
+    st.stop()
+
 from book_drive_sync import DriveBookStore, reset_state
 
 # Google OAuth callback is handled globally, but SAFEGENIX no longer hard-locks
