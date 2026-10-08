@@ -3145,7 +3145,8 @@ st.markdown("""
   box-shadow:inset 0 1px 0 #fff,0 3px 8px rgba(80,99,115,.14) !important;
 }
 
-/* RESET + CADANGKAN — coral/oranye */
+/* RESET / PEMULIHAN — coral/oranye */
+.st-key-settings_drive_menu_v120 button,
 .st-key-settings_drive_execute_v110_reset button,
 .st-key-drive_reset_yes_v110 button{
   background:linear-gradient(135deg,#ffffff 0%,#fff2e8 23%,#f5b27d 62%,#e77b45 100%) !important;
@@ -6937,13 +6938,7 @@ def render_settings_v341():
         gdrive.render_account_settings(compact=True)
         st.caption('Kegiatan tersimpan otomatis di Google Drive. Masuk dengan akun yang sama di perangkat lain untuk memuat seluruh kegiatan aktif tanpa pemulihan.')
         has_reset=bool((data.get('storage_state') or {}).get('has_reset'))
-        actions=[DRIVE_ACTION_LABELS_V110['reset']]
-        if has_reset:
-            actions.extend(DRIVE_ACTION_LABELS_V110[key] for key in ('all','dsafe','safety'))
-        if st.session_state.get('settings_drive_action_v110') not in actions:
-            st.session_state.pop('settings_drive_action_v110',None)
-        action_label=st.selectbox('Tindakan',actions,key='settings_drive_action_v110')
-        action={label:key for key,label in DRIVE_ACTION_LABELS_V110.items()}[action_label]
+        st.session_state.pop('settings_drive_action_v110',None)
 
         period_choice=st.selectbox('Filter waktu',['Tanggal','Bulan','Tahun'],
                                    key='settings_drive_period_v110')
@@ -6973,17 +6968,27 @@ def render_settings_v341():
         valid_period=scope[0]<=scope[1]
         if not valid_period:
             st.warning('Tanggal akhir harus sama atau setelah tanggal awal.')
-        if action=='dsafe':
-            st.caption('Memulihkan sumber D-Safe: CCTV, Simulasi, Satu Hari Satu Pasal, dan Cek Emplasemen.')
-        elif action=='safety':
-            st.caption('Memulihkan sumber Safety Talk: Safety Talk/IBPR, CCTV, dan Pengawasan Langsir.')
-        elif action=='all':
-            st.caption('Memulihkan semua jenis kegiatan pada periode yang dipilih.')
-        else:
-            st.caption('Reset mengosongkan kegiatan pada periode terpilih. Salinan pemulihan dibuat otomatis; tombol pemulihan tersedia setelah reset.')
+        st.caption('Reset mengosongkan kegiatan pada periode terpilih. Salinan pemulihan dibuat otomatis; pemulihan dapat dipilih pada tombol oranye setelah akun pernah reset.')
 
-        if st.button(action_label,key=f'settings_drive_execute_v110_{action}',use_container_width=True,
-                     disabled=not valid_period or not (gdrive.cloud_enabled() and gdrive.connected())):
+        disabled=not valid_period or not (gdrive.cloud_enabled() and gdrive.connected())
+        action=None
+        if has_reset:
+            with st.popover('Reset Data / Pemulihan Data',key='settings_drive_menu_v120',
+                            width='stretch',disabled=disabled):
+                if st.button('Reset Data',key='settings_drive_execute_v110_reset',
+                             use_container_width=True,disabled=disabled):
+                    action='reset'
+                st.markdown('**Pemulihan Data**')
+                for restore_action in ('all','dsafe','safety'):
+                    if st.button(DRIVE_ACTION_LABELS_V110[restore_action],
+                                 key=f'settings_drive_execute_v110_{restore_action}',
+                                 use_container_width=True,disabled=disabled):
+                        action=restore_action
+        elif st.button('Reset Data',key='settings_drive_execute_v110_reset',
+                       use_container_width=True,disabled=disabled):
+            action='reset'
+
+        if action is not None:
             st.session_state['settings_drive_action_pending_v110']={'action':action,'scope':scope}
             st.rerun()
 
