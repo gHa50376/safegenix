@@ -73,7 +73,7 @@ pada Drive, keluar melalui Pengaturan, serta mencabut izin SAFEGENIX melalui
 [koneksi akun Google](https://myaccount.google.com/connections).
 
 Data dipertahankan selama masih tersimpan pada aplikasi, Drive, daftar akses,
-atau arsip pengelola. **Reset & Cadangkan** membuat cadangan sebelum mengosongkan
+atau arsip pengelola. **Reset Data** menyimpan salinan pemulihan secara otomatis sebelum mengosongkan
 data kegiatan aktif. Cadangan, keluaran yang pernah dibuat, salinan admin, dan
 riwayat versi pada layanan penyimpanan perlu dikelola secara terpisah.
 Keluar dari aplikasi atau mencabut izin Google tidak otomatis menghapus berkas

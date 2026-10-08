@@ -501,18 +501,23 @@ def _locate_file(service, rel_path: str):
     return found, parent
 
 
-def read_bytes(rel_path: str, *, refresh: bool = False) -> Optional[bytes]:
+def read_bytes(rel_path: str, *, refresh: bool = False, refresh_if_changed: bool = False) -> Optional[bytes]:
     rel_path = str(PurePosixPath(rel_path))
     if not connected():
         return st.session_state.setdefault("_gdrive_guest_files", {}).get(rel_path)
-    if not refresh and rel_path in _cache():
+    if not refresh and not refresh_if_changed and rel_path in _cache():
         return _cache()[rel_path]
     service = _service()
     found, _ = _locate_file(service, rel_path)
     if not found:
         return None
     meta = service.files().get(fileId=found["id"], fields="id,modifiedTime,version").execute()
-    _versions()[rel_path] = str(meta.get("version") or meta.get("modifiedTime") or "")
+    version = str(meta.get("version") or meta.get("modifiedTime") or "")
+    if (not refresh and refresh_if_changed and rel_path in _cache()
+            and rel_path not in _pending() and version == _versions().get(rel_path)
+            and not (rel_path == "Data/buku_kerja_v341.json"
+                     and st.session_state.get("_gdrive_book_unsaved"))):
+        return _cache()[rel_path]
     buf = io.BytesIO()
     req = service.files().get_media(fileId=found["id"])
     downloader = MediaIoBaseDownload(buf, req)
@@ -520,6 +525,7 @@ def read_bytes(rel_path: str, *, refresh: bool = False) -> Optional[bytes]:
     while not done:
         _, done = downloader.next_chunk()
     value = buf.getvalue()
+    _versions()[rel_path] = version
     _cache()[rel_path] = value
     return value
 
@@ -534,6 +540,8 @@ def write_bytes(rel_path: str, value: bytes, mime_type: str = "application/octet
     _pending()[rel_path] = (value, mime_type)
     try:
         _upload_pending_one(rel_path)
+        if not _pending():
+            st.session_state.pop("_gdrive_sync_error", None)
         return True
     except Exception as exc:
         st.session_state["_gdrive_sync_error"] = str(exc)
@@ -592,6 +600,8 @@ def flush_pending(show_error: bool = False) -> bool:
             st.session_state["_gdrive_sync_error"] = str(exc)
     if show_error and not ok:
         st.error("Sebagian data belum berhasil disinkronkan ke Google Drive. Jangan tutup aplikasi sebelum sinkronisasi berhasil.")
+    if ok:
+        st.session_state.pop("_gdrive_sync_error", None)
     return ok
 
 
@@ -624,8 +634,8 @@ def delete(rel_path: str) -> bool:
     return True
 
 
-def read_json(rel_path: str):
-    raw = read_bytes(rel_path)
+def read_json(rel_path: str, *, refresh: bool = False, refresh_if_changed: bool = False):
+    raw = read_bytes(rel_path, refresh=refresh, refresh_if_changed=refresh_if_changed)
     if raw is None:
         return None
     return json.loads(raw.decode("utf-8"))
@@ -732,6 +742,14 @@ def handle_oauth_callback() -> bool:
             granted_scopes = set(creds.scopes or [])
             if "https://www.googleapis.com/auth/drive.file" not in granted_scopes:
                 raise RuntimeError("Izin drive.file tidak diberikan oleh Google. Silakan hubungkan ulang dan setujui akses Google Drive.")
+            if st.session_state.get("_gdrive_book_unsaved"):
+                raise RuntimeError("Selesaikan penyimpanan kegiatan sebelum mengganti akun Google.")
+            if not force_refresh_cache():
+                raise RuntimeError("Selesaikan penyimpanan data sebelum mengganti akun Google.")
+            for key in list(st.session_state):
+                if str(key).startswith("_gdrive_book_"):
+                    st.session_state.pop(key, None)
+            clear_app_session_state_preserve_auth()
             _clear_runtime_service()
             st.session_state.pop("_safegenix_access_lookup_cache", None)
             st.session_state["_gdrive_credentials"] = _serialize_credentials(creds)
@@ -773,6 +791,9 @@ def user_info() -> dict:
 
 
 def disconnect() -> bool:
+    if st.session_state.get("_gdrive_book_unsaved"):
+        st.error("Perubahan kegiatan belum tersimpan di Google Drive. Coba simpan lagi sebelum keluar.")
+        return False
     if _pending() and not flush_pending():
         return False
     _clear_runtime_service()
@@ -783,6 +804,7 @@ def disconnect() -> bool:
         if key.startswith("_gdrive_") and not key.startswith("_gdrive_persist_"):
             del st.session_state[key]
     _queue_auth_store("clear", None)
+    clear_app_session_state_preserve_auth()
     return True
 
 def force_refresh_cache(*, discard_pending: bool = False):

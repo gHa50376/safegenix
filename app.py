@@ -100,6 +100,8 @@ from legal_pages import render_legal_page_if_requested, render_legal_footer
 if render_legal_page_if_requested():
     st.stop()
 
+from book_drive_sync import DriveBookStore, reset_state
+
 # Google OAuth callback is handled globally, but SAFEGENIX no longer hard-locks
 # the Beranda. Authentication and access requests are completed from Pengaturan.
 gdrive.handle_oauth_callback()
@@ -4327,7 +4329,7 @@ DRIVE_RESTORE_GROUPS_V110 = {
     'safety': {'keg_1', 'keg_9', 'keg_10'},
 }
 DRIVE_ACTION_LABELS_V110 = {
-    'reset': 'Reset dan Cadangkan Data ke Drive',
+    'reset': 'Reset Data',
     'all': 'Pulihkan Semua dari Drive',
     'dsafe': 'Pulihkan D-Safe',
     'safety': 'Pulihkan Safety Talk',
@@ -4352,57 +4354,26 @@ def _book_filter_restore_group_v110(data, scope, group):
 
 
 def _book_sync_latest_drive_v110():
-    """Resolve stale browser state against Drive before reset/restore.
-
-    Drive is the source of truth for records already present there. Any new
-    local records whose IDs are not yet in Drive are merged in before the
-    destructive operation begins.
-    """
+    """Use the latest active book without resurrecting previously reset rows."""
     if not (gdrive.cloud_enabled() and gdrive.connected()):
         raise RuntimeError('Hubungkan Google Drive terlebih dahulu.')
-
-    local=_book_merge(deepcopy(st.session_state.get('_dsafe_guest_book',DEFAULT_BOOK_DATA)))
-    # Keep a copy of local unsent rows, then deliberately reload the latest
-    # remote revision. This removes the stale revision that previously caused
-    # the manual "Sinkronkan ulang" conflict after Reset dan Cadangkan.
-    gdrive.force_refresh_cache(discard_pending=True)
-    raw_bytes=gdrive.read_bytes('Data/buku_kerja_v341.json',refresh=True)
-    if raw_bytes is None:
-        remote=deepcopy(DEFAULT_BOOK_DATA)
-    else:
-        try:
-            remote=_book_merge(json.loads(raw_bytes.decode('utf-8-sig')))
-        except Exception as exc:
-            raise RuntimeError('Data Buku Kerja di Google Drive tidak dapat dibaca.') from exc
-
-    merged,added=_merge_partial_book(remote,local)
-    if added or raw_bytes is None:
-        if not gdrive.write_json('Data/buku_kerja_v341.json',merged) or not gdrive.flush_pending():
-            raise RuntimeError('Data terbaru belum berhasil disinkronkan ke Google Drive.')
-    st.session_state['_dsafe_guest_book']=deepcopy(merged)
-    st.session_state.pop('_gdrive_sync_error',None)
-    return merged
+    return _drive_book_store().load(refresh=True)
 
 
 def _drive_reset_backup_name_v110(data,scope):
     station=data.get('station','')
     period_label=_report_date_range(*scope)
     base=_report_download_filename('Buku Kerja',station,period_label,'zip')
-    stamp=datetime.now(timezone(timedelta(hours=7))).strftime('%Y%m%d-%H%M%S')
+    stamp=datetime.now(timezone(timedelta(hours=7))).strftime('%Y%m%d-%H%M%S-%f')
     stem=base[:-4] if base.lower().endswith('.zip') else base
     return f'{stem} - {stamp}.zip'
 
 
 def _drive_verify_book_v110(expected):
-    gdrive.force_refresh_cache()
-    raw=gdrive.read_bytes('Data/buku_kerja_v341.json',refresh=True)
-    if raw is None:
-        return False
     try:
-        actual=_book_merge(json.loads(raw.decode('utf-8-sig')))
+        actual=_drive_book_store().load(refresh=True)
     except Exception:
         return False
-    st.session_state['_dsafe_guest_book']=deepcopy(actual)
     return _book_data_fingerprint(actual)==_book_data_fingerprint(expected)
 
 
@@ -4430,7 +4401,7 @@ def _drive_collect_restore_v110(scope,group):
     return aggregate,used_archives,errors,len(archives)
 
 
-@st.dialog('Reset dan Cadangkan Data ke Drive', dismissible=False)
+@st.dialog('Reset Data', dismissible=False)
 def _confirm_drive_reset_v110():
     pending=st.session_state.get('settings_drive_action_pending_v110') or {}
     scope=pending.get('scope')
@@ -4447,16 +4418,22 @@ def _confirm_drive_reset_v110():
         return
 
     st.write(f'Periode **{_report_date_range(*scope)}**')
-    st.write(f'**{count} kegiatan** akan disimpan ke Cadangan Google Drive lalu dihapus dari data aktif.')
-    st.caption('Kegiatan di luar periode ini tetap ada. Tidak ada file ZIP yang perlu diunduh ke perangkat.')
+    st.write(f'**{count} kegiatan** akan dihapus dari data aktif pada semua perangkat akun ini.')
+    st.caption('Salinan pemulihan disimpan otomatis di Drive sebelum reset. Kegiatan di luar periode, identitas, dan master data tetap ada.')
     yes,no=st.columns(2)
-    if yes.button('Reset dan Cadangkan',key='drive_reset_yes_v110',use_container_width=True,
+    if yes.button('Reset Data',key='drive_reset_yes_v110',use_container_width=True,
                   disabled=count==0):
         try:
             backup_bytes,_manifest=_book_archive_bytes(selected,scope,include_local=False)
             backup_name=_drive_reset_backup_name_v110(current,scope)
             if not gdrive.save_reset_backup_archive(backup_bytes,backup_name):
-                raise RuntimeError('Cadangan belum berhasil disimpan ke Google Drive.')
+                raise RuntimeError('Salinan pemulihan belum tersimpan di Google Drive. Reset dibatalkan.')
+            saved_archive=gdrive.read_reset_backup_archive('Cadangan/Reset/'+backup_name)
+            if saved_archive != backup_bytes:
+                raise RuntimeError('Salinan pemulihan belum dapat diverifikasi. Reset dibatalkan.')
+            remaining['storage_state']=reset_state(
+                current,archive=backup_name,start=scope[0],end=scope[1],count=count,
+                timestamp=datetime.now(timezone(timedelta(hours=7))).isoformat(timespec='seconds'))
             save_book_data(remaining)
             if not gdrive.flush_pending() or not _drive_verify_book_v110(remaining):
                 # The archive is already safe in Drive. Do not report reset as
@@ -4466,7 +4443,7 @@ def _confirm_drive_reset_v110():
             moved=count
             gdrive.clear_app_session_state_preserve_auth()
             st.session_state['settings_drive_result_v110']=(
-                'success',f'{moved} kegiatan telah dicadangkan ke Google Drive dan direset dari data aktif.')
+                'success',f'{moved} kegiatan telah direset. Pemulihan data sekarang tersedia.')
             st.session_state.pop('settings_drive_action_pending_v110',None)
             st.query_params['nav']='Pengaturan'
             st.rerun()
@@ -4485,6 +4462,11 @@ def _confirm_drive_restore_v110():
         return
     try:
         current=_book_sync_latest_drive_v110()
+        if not (current.get('storage_state') or {}).get('has_reset'):
+            st.info('Pemulihan tersedia setelah Anda melakukan reset data.')
+            if st.button('Tutup',key='drive_restore_no_reset_close',use_container_width=True):
+                st.session_state.pop('settings_drive_action_pending_v110',None); st.rerun()
+            return
         incoming,used,errors,total_archives=_drive_collect_restore_v110(scope,group)
         found=sum(map(len,incoming.get('sessions',{}).values()))
         target,added=_merge_partial_book(current,incoming)
@@ -4498,7 +4480,7 @@ def _confirm_drive_restore_v110():
     st.write(f'**{DRIVE_ACTION_LABELS_V110[group]}**')
     st.write(f'Periode **{_report_date_range(*scope)}**')
     if total_archives==0:
-        st.warning('Belum ada arsip Reset dan Cadangkan di Google Drive.')
+        st.warning('Belum ada salinan pemulihan dari reset di Google Drive.')
     else:
         st.write(f'Ditemukan **{found} kegiatan** • akan dipulihkan **{added}** • sudah ada/duplikat **{duplicates}**.')
         if errors:
@@ -4688,7 +4670,7 @@ def _book_merge(raw):
     raw_version = 0
     if isinstance(raw, dict):
         raw_version = int(raw.get('version') or 0)
-        for key in ('station', 'people', 'activities', 'sessions', 'user_profile'):
+        for key in ('station', 'people', 'activities', 'sessions', 'user_profile', 'storage_state'):
             if key in raw:
                 data[key] = raw[key]
         # V36.4.24: master petugas lama dikosongkan satu kali.
@@ -4819,6 +4801,10 @@ def _book_merge(raw):
     return data
 
 
+def _drive_book_store():
+    return DriveBookStore(gdrive,st.session_state,_book_merge,DEFAULT_BOOK_DATA)
+
+
 def load_book_data():
     """Load Buku Kerja from the connected user's Drive or original local file.
 
@@ -4828,36 +4814,29 @@ def load_book_data():
     Local/non-Google installations keep the exact Windows-safe V36.4.113 path.
     """
     if gdrive.cloud_enabled():
+        if not gdrive.connected():
+            return _book_merge(deepcopy(DEFAULT_BOOK_DATA))
         try:
-            gdrive.flush_pending()
-            if gdrive.connected():
-                raw=gdrive.read_json('Data/buku_kerja_v341.json')
-                if raw is None:
-                    raw=deepcopy(st.session_state.get('_dsafe_guest_book', DEFAULT_BOOK_DATA))
-                    data=_book_merge(raw)
-                    gdrive.write_json('Data/buku_kerja_v341.json',data)
-                else:
-                    data=_book_merge(raw)
-                    if data != raw:
-                        gdrive.write_json('Data/buku_kerja_v341.json',data)
-                    # If the user created activities before connecting Drive, merge
-                    # only previously unseen sessions into the existing cloud book.
-                    if st.session_state.pop('_gdrive_just_connected',False):
-                        guest=st.session_state.get('_dsafe_guest_book')
-                        if isinstance(guest,dict) and any(guest.get('sessions',{}).values()):
-                            data,added=_merge_partial_book(data,_book_merge(guest))
-                            if added:
-                                gdrive.write_json('Data/buku_kerja_v341.json',data)
-                st.session_state['_dsafe_guest_book']=deepcopy(data)
-                return data
-            data=_book_merge(deepcopy(st.session_state.get('_dsafe_guest_book',DEFAULT_BOOK_DATA)))
-            st.session_state['_dsafe_guest_book']=deepcopy(data)
+            data=_drive_book_store().load()
+            if st.session_state.pop('_gdrive_book_recovered',False):
+                st.session_state['bk_form_open']=False
+                st.session_state['bk_edit']=None
+                st.session_state['_gdrive_book_saved_notice']=True
+                st.query_params['bk_view']='list'
+                st.rerun()
+            if st.session_state.pop('_gdrive_book_saved_notice',False):
+                st.success('Perubahan otomatis tersimpan di Google Drive.')
             return data
         except Exception as exc:
-            st.session_state['_gdrive_sync_error']=str(exc)
-            data=_book_merge(deepcopy(st.session_state.get('_dsafe_guest_book',DEFAULT_BOOK_DATA)))
-            st.session_state['_dsafe_guest_book']=deepcopy(data)
-            return data
+            st.session_state['_gdrive_book_error']=str(exc)
+            st.error(f'Data Drive belum siap: {exc}')
+            st.caption('Data tersimpan di Drive tetap dipertahankan. Tunggu sampai penyimpanan atau pemuatan berhasil sebelum menutup aplikasi.')
+            if st.button('Coba Lagi',key='book_drive_retry_load',use_container_width=True):
+                st.rerun()
+            if not st.session_state.get('_gdrive_book_unsaved') and st.button(
+                    'Masuk Ulang',key='book_drive_login_again',use_container_width=True):
+                if gdrive.disconnect(): st.rerun()
+            st.stop()
 
     pending=BOOK_DATA_DIR / 'buku_kerja_v341.pending.json'
     for source in (pending, BOOK_DATA_FILE):
@@ -4879,10 +4858,17 @@ def save_book_data(data):
     """Persist Buku Kerja to per-user Google Drive or original local storage."""
     normalized=_book_merge(data)
     if gdrive.cloud_enabled():
-        st.session_state['_dsafe_guest_book']=deepcopy(normalized)
-        if gdrive.connected():
-            if not gdrive.write_json('Data/buku_kerja_v341.json',normalized):
-                st.session_state['_gdrive_sync_error']=st.session_state.get('_gdrive_sync_error') or 'Data belum berhasil tersinkron ke Google Drive.'
+        if not gdrive.connected():
+            st.error('Masuk dengan Google sebelum menyimpan data.')
+            st.stop()
+        try:
+            committed=_drive_book_store().save(normalized)
+            data.clear(); data.update(committed)
+        except Exception as exc:
+            st.session_state['_gdrive_book_error']=str(exc)
+            st.error(f'Perubahan belum tersimpan di Google Drive: {exc}')
+            st.caption('Isian dipertahankan. Coba simpan lagi dan tunggu konfirmasi sebelum menutup aplikasi.')
+            st.stop()
         return
 
     BOOK_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -6921,14 +6907,15 @@ def render_settings_v341():
     elif panel=='activities':
         _activity_master(data)
 
-    with st.expander('Cadangan Data'):
+    with st.expander('Penyimpanan & Reset Data'):
         gdrive.render_account_settings(compact=True)
-        actions=[
-            DRIVE_ACTION_LABELS_V110['reset'],
-            DRIVE_ACTION_LABELS_V110['all'],
-            DRIVE_ACTION_LABELS_V110['dsafe'],
-            DRIVE_ACTION_LABELS_V110['safety'],
-        ]
+        st.caption('Kegiatan tersimpan otomatis di Google Drive. Masuk dengan akun yang sama di perangkat lain untuk memuat seluruh kegiatan aktif tanpa pemulihan.')
+        has_reset=bool((data.get('storage_state') or {}).get('has_reset'))
+        actions=[DRIVE_ACTION_LABELS_V110['reset']]
+        if has_reset:
+            actions.extend(DRIVE_ACTION_LABELS_V110[key] for key in ('all','dsafe','safety'))
+        if st.session_state.get('settings_drive_action_v110') not in actions:
+            st.session_state.pop('settings_drive_action_v110',None)
         action_label=st.selectbox('Tindakan',actions,key='settings_drive_action_v110')
         action={label:key for key,label in DRIVE_ACTION_LABELS_V110.items()}[action_label]
 
@@ -6967,7 +6954,7 @@ def render_settings_v341():
         elif action=='all':
             st.caption('Memulihkan semua jenis kegiatan pada periode yang dipilih.')
         else:
-            st.caption('Data periode terpilih disimpan ke Cadangan Google Drive, lalu dihapus dari data aktif.')
+            st.caption('Reset mengosongkan kegiatan pada periode terpilih. Salinan pemulihan dibuat otomatis; tombol pemulihan tersedia setelah reset.')
 
         if st.button(action_label,key=f'settings_drive_execute_v110_{action}',use_container_width=True,
                      disabled=not valid_period or not (gdrive.cloud_enabled() and gdrive.connected())):
