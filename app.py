@@ -107,15 +107,18 @@ def _current_drive_storage(module):
     from threading import Lock
 
     required = {"refresh", "refresh_if_changed"}
-    if required.issubset(signature(module.read_json).parameters):
+    def current_api():
+        return (required.issubset(signature(module.read_json).parameters)
+                and callable(getattr(module, 'render_login_button', None)))
+    if current_api():
         return module
     # A main-script update can precede invalidation of an imported module.
     # Recheck under one process-wide lock; reload keeps session/auth data.
     lock = vars(module).setdefault("_safegenix_api_upgrade_lock", Lock())
     with lock:
-        if not required.issubset(signature(module.read_json).parameters):
+        if not current_api():
             module = reload(module)
-        if not required.issubset(signature(module.read_json).parameters):
+        if not current_api():
             raise RuntimeError("Versi penyimpanan Drive belum lengkap. Coba lagi setelah pembaruan selesai.")
     return module
 
@@ -3211,11 +3214,14 @@ st.markdown("""
   background:linear-gradient(135deg,#ffffff 0%,#edf9f8 24%,#9cd9d2 64%,#4aa9a0 100%) !important;
   border-color:#53a59d !important;color:#194f4a !important;
 }
-[data-testid="stLinkButton"] a{
+[data-testid="stLinkButton"] a,
+.safegenix-google-login-link{
   background:linear-gradient(135deg,#ffffff 0%,#edf6ff 24%,#99c8eb 64%,#4e91c9 100%) !important;
   border:1px solid #5a91be !important;color:#173f67 !important;
   box-shadow:inset 0 1px 0 #fff,0 3px 9px rgba(52,127,196,.17) !important;
 }
+.safegenix-google-login-link:hover{filter:brightness(1.04);}
+.safegenix-google-login-link:focus-visible{outline:2px solid #173f67;outline-offset:2px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -6782,7 +6788,7 @@ def render_settings_v341():
         st.info('Beranda dapat dilihat tanpa login. Untuk menggunakan fungsi SAFEGENIX, masuk dengan Google lalu lengkapi Nama Pengguna dan Nama Stasiun.')
         auth_url = gdrive.authorization_url() if gdrive.cloud_enabled() else None
         if auth_url:
-            st.link_button('🔐 Masuk dengan Google', auth_url, use_container_width=True)
+            gdrive.render_login_button('🔐 Masuk dengan Google', auth_url)
         elif not gdrive.cloud_enabled():
             st.error('Google Drive belum dikonfigurasi pada server aplikasi.')
     else:

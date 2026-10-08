@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import hmac
 import io
 import json
@@ -347,6 +348,20 @@ def authorization_url() -> Optional[str]:
         state=state,
     )
     return url
+
+
+def render_login_button(label: str, url: str):
+    """Open Google in the current top-level tab, including on Community Cloud."""
+    # st.link_button always opens a new tab. st.html preserves this explicit
+    # target, and _top keeps Google's account page outside the Cloud app iframe.
+    st.html(
+        '<a class="safegenix-google-login-link" '
+        f'href="{html.escape(url, quote=True)}" target="_top" rel="noreferrer" '
+        'style="display:flex;align-items:center;justify-content:center;'
+        'box-sizing:border-box;width:100%;min-height:42px;padding:.35rem .75rem;'
+        'border-radius:11px;font:inherit;font-weight:800;text-decoration:none;">'
+        f'{html.escape(label)}</a>'
+    )
 
 
 def _serialize_credentials(creds) -> dict:
@@ -871,7 +886,7 @@ def render_account_settings(compact: bool = False):
         st.warning("Belum terhubung. Hubungkan Google Drive agar data tersimpan dan dapat dipulihkan pada perangkat lain.")
         url = authorization_url()
         if url:
-            st.link_button("Hubungkan Google Drive", url, use_container_width=True)
+            render_login_button("Hubungkan Google Drive", url)
 
     if not compact:
         admin_email = str(_cfg().get("admin_email") or "").strip()
