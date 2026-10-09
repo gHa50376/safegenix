@@ -5661,8 +5661,30 @@ def _navigate_v36458(target, book_view=None):
         st.query_params['bk_view']='input'
 
 
+def _open_book_edit_v120(sid):
+    """Open a saved activity in the current authenticated Streamlit session."""
+    data=load_book_data()
+    _, old=_session_find(data,sid)
+    if old is None:
+        st.session_state['bk_edit_error_v120']='Kegiatan tidak ditemukan. Muat ulang Buku Kerja.'
+        return
+    # Reload saved values when reopening, including after cancelling an edit.
+    for key in list(st.session_state.keys()):
+        if str(key).startswith('bk_') and str(sid) in str(key):
+            st.session_state.pop(key,None)
+    st.session_state['bk_edit']=sid
+    st.session_state['bk_form_open']=True
+    st.session_state['main_nav_v340']='Buku Kerja'
+    st.query_params['nav']='Buku Kerja'
+    st.query_params['bk_view']='input'
+    st.query_params.pop('bk_edit',None)
+
+
 def render_buku_kerja_v341():
     data=load_book_data(); st.session_state['_book_data']=data
+    edit_error=st.session_state.pop('bk_edit_error_v120',None)
+    if edit_error:
+        st.warning(edit_error)
 
     # V36.4.29 — aksi Edit/Hapus Riwayat Kegiatan diproses di fungsi Buku Kerja
     # yang aktif. Link aksi tetap kembali ke halaman Buku Kerja, bukan Beranda.
@@ -5678,8 +5700,7 @@ def render_buku_kerja_v341():
             # Fallback link: continue this run so the dialog opens immediately.
         if _q_edit:
             if any(s.get('id') == _q_edit for arr in (data.get('sessions') or {}).values() for s in (arr or [])):
-                st.session_state['bk_edit']=_q_edit
-                st.query_params['bk_view']='input'
+                _open_book_edit_v120(_q_edit)
             try: del st.query_params['bk_edit']
             except Exception: pass
             st.query_params['nav']='Buku Kerja'
@@ -6121,7 +6142,7 @@ def render_buku_kerja_v341():
             delete_key=hashlib.sha1(str(sid).encode('utf-8')).hexdigest()[:12]
             return (
                 f'<div class="bk-hist-action" style="display:flex;flex-direction:column;gap:5px;align-items:center;justify-content:center;margin-left:6px;">'
-                f'<a href="?nav=Buku%20Kerja&bk_edit={sid_q}" target="_top" aria-label="Edit kegiatan ini" class="bk-hist-action-btn" style="text-decoration:none;display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;font-size:15px;">✏️</a>'
+                f'<a href="?nav=Buku%20Kerja&bk_edit={sid_q}" target="_top" data-bk-edit-key="{delete_key}" aria-label="Edit kegiatan ini" class="bk-hist-action-btn" style="text-decoration:none;display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;font-size:15px;">✏️</a>'
                 f'<a href="?nav=Buku%20Kerja&bk_delete={sid_q}" target="_top" data-bk-delete-key="{delete_key}" aria-label="Hapus kegiatan ini" class="bk-hist-action-btn" style="text-decoration:none;display:flex;align-items:center;justify-content:center;width:30px;height:30px;border:1px solid #fecaca;border-radius:8px;background:#fff1f2;font-size:15px;">🗑️</a>'
                 f'</div>'
             )
@@ -6250,9 +6271,12 @@ def render_buku_kerja_v341():
         st.markdown(history_html,unsafe_allow_html=True)
         # The history table is HTML so its icon cannot itself be a Streamlit
         # widget. Forward clicks to native buttons without navigating/reloading.
-        st.markdown('<style>[class*="st-key-bk_delete_bridge_v36490_"]{display:none !important}</style>',unsafe_allow_html=True)
+        st.markdown('<style>[class*="st-key-bk_delete_bridge_v36490_"],[class*="st-key-bk_edit_bridge_v120_"]{display:none !important}</style>',unsafe_allow_html=True)
         for sid in dict.fromkeys(history_delete_ids):
             delete_key=hashlib.sha1(sid.encode('utf-8')).hexdigest()[:12]
+            with st.container(key=f'bk_edit_bridge_v120_{delete_key}'):
+                st.button('Edit',key=f'bk_edit_native_v120_{delete_key}',
+                          on_click=_open_book_edit_v120,args=(sid,))
             with st.container(key=f'bk_delete_bridge_v36490_{delete_key}'):
                 st.button('Hapus',key=f'bk_delete_native_v36490_{delete_key}',
                           on_click=_queue_delete_v36490,args=('session',sid))
@@ -6263,10 +6287,12 @@ def render_buku_kerja_v341():
           const previous=window.parent.__bkDeleteBridgeV36490;
           if(previous) doc.removeEventListener('click',previous,true);
           const handle=(event)=>{
-            const link=event.target.closest('a[data-bk-delete-key]');
+            const link=event.target.closest('a[data-bk-edit-key],a[data-bk-delete-key]');
             if(!link) return;
-            const key=link.getAttribute('data-bk-delete-key');
-            const button=doc.querySelector('[class*="st-key-bk_delete_bridge_v36490_'+key+'"] button');
+            const editing=link.hasAttribute('data-bk-edit-key');
+            const key=link.getAttribute(editing?'data-bk-edit-key':'data-bk-delete-key');
+            const prefix=editing?'bk_edit_bridge_v120_':'bk_delete_bridge_v36490_';
+            const button=doc.querySelector('[class*="st-key-'+prefix+key+'"] button');
             if(!button) return;
             event.preventDefault();
             event.stopPropagation();
