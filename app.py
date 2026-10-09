@@ -3422,14 +3422,15 @@ def _signature_inputs(data, selected, saved=None, prefix='booksig', activity_tit
                 st.image(_from_b64(sigs[person]), width=140)
     return sigs
 
-def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures):
+def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures, persist=True):
     session={'id':sid or ('sess_'+hashlib.sha1(f'{datetime.now().timestamp()}'.encode()).hexdigest()[:12]),'date':d.isoformat(),'note':note.strip(),'members':members,'photos':[_b64(x) for x in photos if x],'signatures':signatures,'createdAt':datetime.now().timestamp()}
     # Remove old copy when editing.
     if sid:
         for aid,arr in data['sessions'].items():
             data['sessions'][aid]=[x for x in arr if x.get('id')!=sid]
     data['sessions'].setdefault(activity_id,[]).append(session)
-    save_book_data(data)
+    if persist:
+        save_book_data(data)
 
 def _book_pdf(data, start=None, end=None, activity_id=None):
     """Cetak Buku Kerja dalam format laporan lama.
@@ -5135,7 +5136,7 @@ def _session_find(data, sid):
     return None,None
 
 
-def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures):
+def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures, persist=True):
     sid = sid or ('sess_'+hashlib.sha1(f'{datetime.now().timestamp()}'.encode()).hexdigest()[:12])
     created = datetime.now().timestamp()
     old_aid, old = _session_find(data, sid) if sid else (None,None)
@@ -5160,7 +5161,8 @@ def _save_session_from_form(data, sid, activity_id, d, note, members, photos, si
         'signatures':dict(signatures or {}),'createdAt':created,
     }
     data['sessions'].setdefault(activity_id,[]).append(session)
-    save_book_data(data)
+    if persist:
+        save_book_data(data)
 
 
 def _delete_session(data, sid):
@@ -5661,6 +5663,19 @@ def _navigate_v36458(target, book_view=None):
         st.query_params['bk_view']='input'
 
 
+def _save_other_activities_v121(data, items, d):
+    """Build every selected activity before persisting the batch once."""
+    import copy
+    if not items:
+        raise ValueError('Pilih minimal satu Sub Kegiatan.')
+    staged=copy.deepcopy(data)
+    for activity_id, photos in items:
+        _save_session_from_form(staged,None,activity_id,d,'',[],photos,{},persist=False)
+    save_book_data(staged)
+    data.clear()
+    data.update(staged)
+
+
 def _open_book_edit_v120(sid):
     """Open a saved activity in the current authenticated Streamlit session."""
     data=load_book_data()
@@ -5775,8 +5790,13 @@ def render_buku_kerja_v341():
                     sub_options=['']
                 sub_default=current_title if current_title in sub_options else sub_options[0]
                 sub_idx=sub_options.index(sub_default)
+                other_titles=[]
                 with _sub_col:
-                    title=st.selectbox('Sub Kegiatan',sub_options,index=sub_idx,key=f'bk_subactivity_{form_token}')
+                    if form_group == ACTIVITY_GROUP_OTHER and not edit:
+                        other_titles=st.multiselect('Sub Kegiatan',sub_options,default=[],key=f'bk_subactivities_{form_token}')
+                        title=other_titles[0] if other_titles else ''
+                    else:
+                        title=st.selectbox('Sub Kegiatan',sub_options,index=sub_idx,key=f'bk_subactivity_{form_token}')
             aid=next((a['id'] for a in acts if a['title']==title), aid_default)
 
             # Pilihan petugas tetap DI LUAR st.form agar perubahan petugas
@@ -5879,6 +5899,22 @@ def render_buku_kerja_v341():
                         st.caption('1 foto lama tersimpan. Jika tidak upload foto baru, foto lama tetap dipertahankan.')
                         try: st.image(old_photos[0], caption='Foto Pengawasan Langsir lama', width=180)
                         except Exception: pass
+                elif form_group == ACTIVITY_GROUP_OTHER and not edit:
+                    selected=[]
+                    signatures={}
+                    note=''
+                    old_photos=[]
+                    other_uploads={}
+                    if not other_titles:
+                        st.info('Pilih satu atau beberapa Sub Kegiatan.')
+                    for other_title in other_titles:
+                        other_aid=next(a['id'] for a in acts if a['title']==other_title)
+                        st.markdown('**'+other_title+'**')
+                        if ' '.join(other_title.lower().split()) not in ('libur','cuti'):
+                            other_uploads[other_aid]=st.file_uploader(
+                                'Dokumentasi Foto — '+other_title,
+                                type=['jpg','jpeg','png','webp'],accept_multiple_files=True,
+                                key=f'bk_other_photos_{form_token}_{other_aid}')
                 elif form_group == 'Kegiatan Lainnya':
                     # Kegiatan Lainnya dibuat sederhana. Khusus Libur dan Cuti
                     # hanya membutuhkan tanggal; tidak ada dokumentasi/foto.
@@ -5925,6 +5961,41 @@ def render_buku_kerja_v341():
                 st.query_params['bk_view']='list'
                 st.rerun()
             if save:
+                if form_group == ACTIVITY_GROUP_OTHER and not edit:
+                    if not other_titles:
+                        st.error('Pilih minimal satu Sub Kegiatan sebelum menyimpan.')
+                        st.stop()
+                    batch=[]
+                    for other_title in other_titles:
+                        other_aid=next(a['id'] for a in acts if a['title']==other_title)
+                        uploads=list(other_uploads.get(other_aid) or [])
+                        batch_photos=[]
+                        seen=set()
+                        for up in uploads[:8]:
+                            raw=_img_bytes(up)
+                            digest=hashlib.sha256(raw).hexdigest()
+                            if digest in seen:
+                                st.error('Foto duplikat pada '+other_title+'. Kegiatan belum disimpan.')
+                                st.stop()
+                            seen.add(digest)
+                            batch_photos.append(raw)
+                        if len(uploads)>8:
+                            st.warning('Hanya 8 foto yang disimpan untuk '+other_title+'.')
+                        batch.append((other_aid,batch_photos))
+                    _save_other_activities_v121(data,batch,d)
+                    saved_d=_safe_date(d)
+                    preview_from=st.session_state.get('bk_rs_v350')
+                    preview_to=st.session_state.get('bk_re_v350')
+                    if preview_from is None or saved_d < _safe_date(preview_from):
+                        st.session_state['bk_rs_v350']=saved_d
+                    if preview_to is None or saved_d > _safe_date(preview_to):
+                        st.session_state['bk_re_v350']=saved_d
+                    st.session_state['bk_form_open']=False
+                    st.session_state['bk_edit']=None
+                    st.query_params['bk_view']='list'
+                    st.success(f'{len(batch)} kegiatan tersimpan.')
+                    st.rerun()
+                    return
                 # Normalize uploads into one ordered list. For Satu Hari Satu Pasal
                 # the order is Pagi, Siang, Malam, exactly matching the three D-Safe
                 # documentation cells. Other activities keep their existing limits.
