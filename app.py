@@ -5048,8 +5048,8 @@ def _selected_person_single_widget(data, selected, key=None):
 
 
 def _book_sessions_flat(data, activity_id=None, start=None, end=None):
-    # Urutan cetak mengikuti urutan input/createdAt, bukan urutan tanggal.
-    # Jika createdAt sama/tidak tersedia, urutan penyimpanan tetap dipertahankan.
+    # Riwayat dan PDF mengikuti tanggal kegiatan dari paling awal.
+    # Pada tanggal sama, gunakan waktu penyimpanan dan urutan data sebagai pembeda.
     rows=[]
     activities={a.get('id'):a for a in data.get('activities',[])}
     seq=0
@@ -5068,7 +5068,7 @@ def _book_sessions_flat(data, activity_id=None, start=None, end=None):
                 created=0.0
             rows.append((d,act,s,created,seq))
             seq += 1
-    rows.sort(key=lambda x:(x[3], x[4]))
+    rows.sort(key=lambda x:(x[0], x[3], x[4]))
     return [(d,act,s) for d,act,s,_,_ in rows]
 
 
