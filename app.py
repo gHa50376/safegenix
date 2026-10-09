@@ -5905,16 +5905,28 @@ def render_buku_kerja_v341():
                     note=''
                     old_photos=[]
                     other_uploads={}
+                    st.markdown('''<style>
+                    [class*="st-key-bk_other_photos_"] [data-testid="stWidgetLabel"] p{
+                        font-weight:800 !important;color:#244d73 !important;
+                        line-height:1.35 !important;letter-spacing:.01em;
+                        margin:0 !important;
+                    }
+                    [class*="st-key-bk_other_photos_"] [data-testid="stWidgetLabel"]{
+                        height:auto !important;min-height:0 !important;
+                        margin-bottom:6px !important;
+                    }
+                    </style>''',unsafe_allow_html=True)
                     if not other_titles:
                         st.info('Pilih satu atau beberapa Sub Kegiatan.')
                     for other_title in other_titles:
                         other_aid=next(a['id'] for a in acts if a['title']==other_title)
-                        st.markdown('**'+other_title+'**')
                         if ' '.join(other_title.lower().split()) not in ('libur','cuti'):
                             other_uploads[other_aid]=st.file_uploader(
                                 'Dokumentasi Foto — '+other_title,
                                 type=['jpg','jpeg','png','webp'],accept_multiple_files=True,
                                 key=f'bk_other_photos_{form_token}_{other_aid}')
+                        else:
+                            st.markdown('**'+other_title+'**')
                 elif form_group == 'Kegiatan Lainnya':
                     # Kegiatan Lainnya dibuat sederhana. Khusus Libur dan Cuti
                     # hanya membutuhkan tanggal; tidak ada dokumentasi/foto.
