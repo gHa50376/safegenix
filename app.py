@@ -5934,7 +5934,15 @@ def render_buku_kerja_v341():
                 sub_options=[a.get('title','') for a in acts if _activity_group(a)==form_group]
                 sub_options=[x for x in sub_options if x]
                 if form_group == ACTIVITY_GROUP_OTHER:
+                    allowed_other_titles={a['title'] for a in acts
+                                          if a.get('id') in {DAILY_REPORT_ACTIVITY_ID,'keg_13','keg_18','keg_19'}
+                                          or a.get('id') not in INITIAL_ACTIVITY_IDS}
+                    if edit:
+                        # An older activity must remain editable from its own row.
+                        allowed_other_titles.add(current_title)
+                    sub_options=[x for x in sub_options if x in allowed_other_titles]
                     sub_options.sort(key=lambda value: not _is_daily_report({'title':value}))
+                sub_label=lambda value: 'Dinas PPKA' if value.lower() == 'dinas ppka' else value
                 if not sub_options:
                     st.info('Belum ada sub kegiatan pada kelompok ini.')
                     sub_options=['']
@@ -5943,11 +5951,46 @@ def render_buku_kerja_v341():
                 other_titles=[]
                 with _sub_col:
                     if form_group == ACTIVITY_GROUP_OTHER and not edit:
-                        other_titles=st.multiselect('Sub Kegiatan',sub_options,default=[],
-                                                    placeholder='Pilih Sub Kegiatan',key=f'bk_subactivities_{form_token}')
+                        choice_prefix=f'bk_subactivities_{form_token}'
+                        previous_choices=st.session_state.get(choice_prefix,[])
+                        for option in sub_options:
+                            option_id=next(a['id'] for a in acts if a['title']==option)
+                            option_key=f'{choice_prefix}_{option_id}'
+                            if option_key not in st.session_state:
+                                st.session_state[option_key]=option in previous_choices
+                        chosen=[option for option in sub_options if st.session_state.get(
+                            f"{choice_prefix}_{next(a['id'] for a in acts if a['title']==option)}",False)]
+                        choice_text=(sub_label(chosen[0]) if len(chosen)==1 else
+                                     f'{len(chosen)} Sub Kegiatan' if chosen else 'Pilih Sub Kegiatan')
+                        with st.container(key=choice_prefix+'_box'):
+                            st.markdown('''<style>
+                            [class*="st-key-bk_subactivities_"] .bk-subactivity-label{
+                                font-size:12px;font-weight:800;color:#244d73;
+                                line-height:1.35;letter-spacing:.01em;margin-bottom:8px;}
+                            [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"]{
+                                width:100%;min-height:43px;background:#fff !important;
+                                border:1px solid #b8d1e6 !important;box-shadow:none !important;
+                                color:#31333f !important;text-align:left;
+                                justify-content:space-between !important;}
+                            [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"]{
+                                flex:1;text-align:left;}
+                            [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"] p{
+                                font-size:14px !important;font-weight:400 !important;letter-spacing:normal !important;
+                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+                            @media(max-width:700px){
+                                [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"] p{
+                                    font-size:12px !important;}}
+                            </style><div class="bk-subactivity-label">Sub Kegiatan</div>''',unsafe_allow_html=True)
+                            with st.popover(choice_text,key=choice_prefix+'_picker',width='stretch'):
+                                for option in sub_options:
+                                    option_id=next(a['id'] for a in acts if a['title']==option)
+                                    if st.checkbox(sub_label(option),key=f'{choice_prefix}_{option_id}'):
+                                        other_titles.append(option)
+                        st.session_state[choice_prefix]=other_titles
                         title=other_titles[0] if other_titles else ''
                     else:
-                        title=st.selectbox('Sub Kegiatan',sub_options,index=sub_idx,key=f'bk_subactivity_{form_token}')
+                        title=st.selectbox('Sub Kegiatan',sub_options,index=sub_idx,
+                                           format_func=sub_label,key=f'bk_subactivity_{form_token}')
             aid=next((a['id'] for a in acts if a['title']==title), aid_default)
 
             # Pilihan petugas tetap DI LUAR st.form agar perubahan petugas
