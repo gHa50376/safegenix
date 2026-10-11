@@ -2816,26 +2816,26 @@ div[data-testid="stRadio"] label:has(input:checked),[data-baseweb="tab"][aria-se
 [class*="st-key-bk_signature_box_"] iframe{
   height:118px !important;
 }
-[data-testid="stForm"] [data-testid="stFileUploader"]{
+:is([data-testid="stForm"],[class*="st-key-bk_daily_"]) [data-testid="stFileUploader"]{
   width:min(100%,250px) !important;padding:2px 5px !important;
 }
-[data-testid="stForm"] [data-testid="stFileUploaderDropzone"]{
+:is([data-testid="stForm"],[class*="st-key-bk_daily_"]) [data-testid="stFileUploaderDropzone"]{
   height:42px !important;min-height:42px !important;max-height:42px !important;
   box-sizing:border-box !important;padding:3px 6px !important;justify-content:flex-start !important;
 }
-[data-testid="stForm"] [data-testid="stFileUploaderDropzoneInstructions"]{
+:is([data-testid="stForm"],[class*="st-key-bk_daily_"]) [data-testid="stFileUploaderDropzoneInstructions"]{
   display:none !important;
 }
-[data-testid="stForm"] [data-testid="stFileUploaderDropzone"] button{
+:is([data-testid="stForm"],[class*="st-key-bk_daily_"]) [data-testid="stFileUploaderDropzone"] button{
   min-height:31px !important;width:auto !important;padding:3px 12px !important;
   font-size:0 !important;white-space:nowrap;
 }
-[data-testid="stForm"] [data-testid="stFileUploaderDropzone"] button::after{
+:is([data-testid="stForm"],[class*="st-key-bk_daily_"]) [data-testid="stFileUploaderDropzone"] button::after{
   content:"Pilih Foto";font-size:12px;font-weight:750;
 }
 [data-testid="stForm"] [data-testid="stVerticalBlock"]{gap:.48rem !important;}
 [data-testid="stForm"] [data-testid="stHorizontalBlock"]{gap:.55rem !important;}
-[data-testid="stForm"] [data-testid="stFileUploader"] label,
+:is([data-testid="stForm"],[class*="st-key-bk_daily_"]) [data-testid="stFileUploader"] label,
 [data-testid="stForm"] [data-testid="stTextInput"] label,
 [data-testid="stForm"] [data-testid="stDateInput"] label{margin-bottom:2px !important;}
 /* V36.4.76: a distinct house silhouette inside the existing bubble Home control. */
@@ -5745,8 +5745,9 @@ def _render_daily_report_form(data, d, old, form_token):
     note=st.text_area('Isi Laporan Harian',value=str((old or {}).get('note') or ''),height=300,
                       placeholder='Tuliskan atau tempel laporan WhatsApp di sini.\n\n1. Kegiatan pertama\n2. Kegiatan berikutnya\n\nHasil dan tindak lanjut...',
                       key=prefix+'_text')
-    uploaded=st.file_uploader('Foto Gabungan Laporan Harian',type=['jpg','jpeg','png','webp'],
-                              accept_multiple_files=False,key=prefix+'_upload')
+    with st.container(key=prefix+'_photo_box'):
+        uploaded=st.file_uploader('Foto Gabungan Laporan Harian',type=['jpg','jpeg','png','webp'],
+                                  accept_multiple_files=False,key=prefix+'_upload')
     st.caption('Unggah satu foto gabungan yang telah Anda buat sendiri.')
     photo=old_photo
     error=''
@@ -5932,6 +5933,8 @@ def render_buku_kerja_v341():
                     form_group=st.selectbox('Form Kegiatan',group_options,index=gidx,key=f'bk_group_{form_token}')
                 sub_options=[a.get('title','') for a in acts if _activity_group(a)==form_group]
                 sub_options=[x for x in sub_options if x]
+                if form_group == ACTIVITY_GROUP_OTHER:
+                    sub_options.sort(key=lambda value: not _is_daily_report({'title':value}))
                 if not sub_options:
                     st.info('Belum ada sub kegiatan pada kelompok ini.')
                     sub_options=['']
@@ -5940,7 +5943,8 @@ def render_buku_kerja_v341():
                 other_titles=[]
                 with _sub_col:
                     if form_group == ACTIVITY_GROUP_OTHER and not edit:
-                        other_titles=st.multiselect('Sub Kegiatan',sub_options,default=[],key=f'bk_subactivities_{form_token}')
+                        other_titles=st.multiselect('Sub Kegiatan',sub_options,default=[],
+                                                    placeholder='Pilih Sub Kegiatan',key=f'bk_subactivities_{form_token}')
                         title=other_titles[0] if other_titles else ''
                     else:
                         title=st.selectbox('Sub Kegiatan',sub_options,index=sub_idx,key=f'bk_subactivity_{form_token}')
@@ -6553,22 +6557,6 @@ def render_buku_kerja_v341():
         </div>
         """
         st.markdown(history_html,unsafe_allow_html=True)
-        for daily_date,daily_activity,daily_session in rows:
-            if not _is_daily_report(daily_activity):
-                continue
-            daily_prefix='bk_daily_saved_'+str(daily_session.get('id'))
-            panel=st.expander('Buka Laporan Harian — '+format_activity_date_id(daily_date),
-                              key=daily_prefix+'_open',on_change='rerun')
-            if not panel.open:
-                continue
-            with panel:
-                daily_note=str(daily_session.get('note') or '')
-                st.code(daily_note,language=None,wrap_lines=True,height=240)
-                daily_photo=next((_from_b64(p) for p in daily_session.get('photos',[]) if p),None)
-                if daily_photo:
-                    preview=_daily_report_image_bytes(daily_photo,320,240,78)
-                    st.image(preview,width='content')
-                st.caption('Gunakan tombol salin pada teks untuk menyalin laporan.')
         # The history table is HTML so its icon cannot itself be a Streamlit
         # widget. Forward clicks to native buttons without navigating/reloading.
         st.markdown('<style>[class*="st-key-bk_delete_bridge_v36490_"],[class*="st-key-bk_edit_bridge_v120_"]{display:none !important}</style>',unsafe_allow_html=True)
