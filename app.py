@@ -3433,6 +3433,7 @@ def _save_session_from_form(data, sid, activity_id, d, note, members, photos, si
     if persist:
         save_book_data(data)
 
+@st.cache_data(ttl=600, max_entries=4, show_spinner=False)
 def _book_pdf(data, start=None, end=None, activity_id=None):
     """Cetak Buku Kerja dalam format laporan lama.
 
@@ -3620,12 +3621,12 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
                 continue
             if _is_daily_report(_activity):
                 for encoded in [v for v in (_sess.get('photos') or []) if v][:1]:
-                    raw=_from_b64(encoded)
                     try:
+                        raw=_daily_report_image_bytes(_from_b64(encoded),800,1000,82)
                         with Image.open(io.BytesIO(raw)) as image:
                             iw,ih=image.size
-                        scale=min(144.0/iw,230.0/ih)
-                        daily_photos.append(RLImage(io.BytesIO(raw),width=iw*scale,height=ih*scale))
+                        scale=min(128.0/iw,180.0/ih)
+                        daily_photos.append(RLImage(io.BytesIO(raw),width=iw*scale,height=ih*scale,hAlign='CENTER'))
                     except Exception:
                         continue
                 continue
@@ -3798,7 +3799,10 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
                 if isinstance(plan,list) and any(
                         isinstance(part,Paragraph) and part.getPlainText()=='Laporan Harian'
                         for part in plan):
-                    table.setStyle(TableStyle([('VALIGN',(0,row_index),(-1,row_index),'TOP')]))
+                    table.setStyle(TableStyle([
+                        ('VALIGN',(0,row_index),(-1,row_index),'TOP'),
+                        ('ALIGN',(5,row_index),(5,row_index),'CENTER'),
+                    ]))
         return table
 
     def _session_to_body_row(report_no, d, entries):
@@ -5709,32 +5713,30 @@ def _is_daily_report(activity):
             or ' '.join(str((activity or {}).get('title') or '').lower().split()) == 'laporan harian')
 
 
-def _daily_report_upload_bytes(upload):
-    raw=upload.getvalue() if hasattr(upload,'getvalue') else upload
+@st.cache_data(ttl=1800, max_entries=48, show_spinner=False)
+def _daily_report_image_bytes(raw, max_width, max_height, quality=82):
+    """Bound image memory and encoded bytes while keeping the entire photo."""
     try:
         with Image.open(io.BytesIO(raw)) as source:
-            image=ImageOps.exif_transpose(source).convert('RGB')
-            image.thumbnail((2400,10000), Image.Resampling.LANCZOS)
+            source.draft('RGB',(max_width,max_height))
+            image=ImageOps.exif_transpose(source)
+            image.thumbnail((max_width,max_height), Image.Resampling.LANCZOS)
+            if image.mode in ('RGBA','LA') or (image.mode=='P' and 'transparency' in image.info):
+                rgba=image.convert('RGBA')
+                image=Image.new('RGB',rgba.size,'white')
+                image.paste(rgba,mask=rgba.getchannel('A'))
+            else:
+                image=image.convert('RGB')
             output=io.BytesIO()
-            image.save(output,'JPEG',quality=90,optimize=True)
+            image.save(output,'JPEG',quality=quality,optimize=True)
             return output.getvalue()
     except Exception as exc:
         raise ValueError('Gambar tidak dapat dibaca. Unggah file JPG, PNG, atau WEBP yang valid.') from exc
 
 
-def _render_daily_report_downloads(data, d, note, photo, prefix):
-    stamp=_safe_date(d).strftime('Tgl %d-%m-%Y')
-    a,b=st.columns(2)
-    with a:
-        st.download_button('Unduh Gambar',photo or b'',
-                           _report_download_filename('Laporan Harian',data.get('station'),stamp,'jpg'),
-                           'image/jpeg',disabled=not bool(photo),on_click='ignore',
-                           use_container_width=True,key=prefix+'_download_image')
-    with b:
-        st.download_button('Unduh Teks',str(note or '').encode('utf-8'),
-                           _report_download_filename('Laporan Harian',data.get('station'),stamp,'txt'),
-                           'text/plain; charset=utf-8',disabled=not bool(str(note or '').strip()),on_click='ignore',
-                           use_container_width=True,key=prefix+'_download_text')
+def _daily_report_upload_bytes(upload):
+    raw=upload.getvalue() if hasattr(upload,'getvalue') else upload
+    return _daily_report_image_bytes(raw,1600,2400,82)
 
 
 def _render_daily_report_form(data, d, old, form_token):
@@ -5758,8 +5760,8 @@ def _render_daily_report_form(data, d, old, form_token):
     elif old_photo:
         st.caption('Foto lama tetap digunakan jika Anda tidak mengunggah foto pengganti.')
     if photo:
-        st.image(photo,caption='Pratinjau Foto Gabungan',width='stretch')
-    _render_daily_report_downloads(data,d,note,photo,prefix)
+        preview=_daily_report_image_bytes(photo,320,240,78)
+        st.image(preview,caption='Pratinjau Foto Gabungan',width='content')
     return {'note':note,'photos':[photo] if photo else [],'error':error}
 
 
@@ -5771,6 +5773,39 @@ def _validate_daily_report(payload):
     if len(payload.get('photos') or [])!=1:
         return 'Unggah satu foto gabungan yang telah Anda buat untuk Laporan Harian sebelum menyimpan.'
     return ''
+
+
+def _book_preview_filter():
+    """Keep the last preview selection outside disposable widget state."""
+    state=st.session_state.get('_bk_preview_filter_v122')
+    if not isinstance(state,dict):
+        today=_today_jakarta()
+        state={
+            'start':_safe_date(st.session_state.get('bk_rs_v350') or today.replace(day=1)),
+            'end':_safe_date(st.session_state.get('bk_re_v350') or today),
+            'activity':str(st.session_state.get('bk_ra_v350') or 'Semua Kegiatan'),
+        }
+        st.session_state['_bk_preview_filter_v122']=state
+    return state
+
+
+def _remember_book_preview_filter():
+    state=dict(_book_preview_filter())
+    for widget,field in (('bk_rs_v350','start'),('bk_re_v350','end'),('bk_ra_v350','activity')):
+        if widget in st.session_state:
+            value=st.session_state[widget]
+            state[field]=str(value) if field=='activity' else _safe_date(value)
+    st.session_state['_bk_preview_filter_v122']=state
+
+
+def _extend_book_preview_filter(saved_date):
+    state=dict(_book_preview_filter())
+    saved_date=_safe_date(saved_date)
+    state['start']=min(_safe_date(state['start']),saved_date)
+    state['end']=max(_safe_date(state['end']),saved_date)
+    st.session_state['_bk_preview_filter_v122']=state
+    st.session_state['bk_rs_v350']=state['start']
+    st.session_state['bk_re_v350']=state['end']
 
 
 def _save_other_activities_v121(data, items, d):
@@ -6135,13 +6170,7 @@ def render_buku_kerja_v341():
                             st.warning('Hanya 8 foto yang disimpan untuk '+other_title+'.')
                         batch.append((other_aid,batch_photos))
                     _save_other_activities_v121(data,batch,d)
-                    saved_d=_safe_date(d)
-                    preview_from=st.session_state.get('bk_rs_v350')
-                    preview_to=st.session_state.get('bk_re_v350')
-                    if preview_from is None or saved_d < _safe_date(preview_from):
-                        st.session_state['bk_rs_v350']=saved_d
-                    if preview_to is None or saved_d > _safe_date(preview_to):
-                        st.session_state['bk_re_v350']=saved_d
+                    _extend_book_preview_filter(d)
                     st.session_state['bk_form_open']=False
                     st.session_state['bk_edit']=None
                     st.query_params['bk_view']='list'
@@ -6240,14 +6269,9 @@ def render_buku_kerja_v341():
                         st.stop()
                 _save_session_from_form(data,edit,aid,d,note,selected,final_photos,signatures)
 
-                # Keep the unified preview's date range inclusive after saving.
+                # Keep the user's last range; extend only to include this date.
                 saved_d=_safe_date(d)
-                preview_from=st.session_state.get('bk_rs_v350')
-                preview_to=st.session_state.get('bk_re_v350')
-                if preview_from is None or saved_d < _safe_date(preview_from):
-                    st.session_state['bk_rs_v350']=saved_d
-                if preview_to is None or saved_d > _safe_date(preview_to):
-                    st.session_state['bk_re_v350']=saved_d
+                _extend_book_preview_filter(saved_d)
 
                 # Keep generator previews in sync immediately after saving Langsir
                 # data, without requiring a browser refresh.  Also expand the weekly
@@ -6277,17 +6301,21 @@ def render_buku_kerja_v341():
     # also feed the one-click PDF download, so the visible rows match the file.
     st.markdown('<div class="bk-unified-title">Preview Buku Kerja</div>',unsafe_allow_html=True)
     with st.container(key='bk_pdf_filters_v74'):
+        preview_filter=_book_preview_filter()
         if 'bk_rs_v350' not in st.session_state:
-            st.session_state['bk_rs_v350']=date(_today_jakarta().year,_today_jakarta().month,1)
+            st.session_state['bk_rs_v350']=_safe_date(preview_filter['start'])
         if 'bk_re_v350' not in st.session_state:
-            st.session_state['bk_re_v350']=_today_jakarta()
+            st.session_state['bk_re_v350']=_safe_date(preview_filter['end'])
         c1,c2=st.columns(2)
-        with c1: rs=st.date_input('Mulai',format='DD/MM/YYYY',key='bk_rs_v350')
-        with c2: re_=st.date_input('Sampai',format='DD/MM/YYYY',key='bk_re_v350')
+        with c1: rs=st.date_input('Mulai',format='DD/MM/YYYY',key='bk_rs_v350',on_change=_remember_book_preview_filter)
+        with c2: re_=st.date_input('Sampai',format='DD/MM/YYYY',key='bk_re_v350',on_change=_remember_book_preview_filter)
         c3,_=st.columns(2)
         with c3:
             opts=['Semua Kegiatan']+[a['title'] for a in data['activities']]
-            sel=st.selectbox('Jenis Kegiatan',opts,key='bk_ra_v350')
+            if 'bk_ra_v350' not in st.session_state:
+                st.session_state['bk_ra_v350']=preview_filter.get('activity') if preview_filter.get('activity') in opts else 'Semua Kegiatan'
+            sel=st.selectbox('Jenis Kegiatan',opts,key='bk_ra_v350',on_change=_remember_book_preview_filter)
+        _remember_book_preview_filter()
     aid=next((a['id'] for a in data['activities'] if a['title']==sel),None)
     valid_period=re_>=rs
     rows=_book_sessions_flat(data,aid,rs,re_) if valid_period else []
@@ -6323,10 +6351,15 @@ def render_buku_kerja_v341():
                 report_no=month_counters[month_key]
             numbered_rows.append((report_no,d,entries))
 
-        def _hist_img_data(b64):
+        def _hist_img_data(b64, thumbnail=False):
             raw=_from_b64(b64)
             if not raw:
                 return ''
+            if thumbnail:
+                try:
+                    raw=_daily_report_image_bytes(raw,280,220,76)
+                except ValueError:
+                    return ''
             return 'data:image/jpeg;base64,'+base64.b64encode(raw).decode('ascii')
 
         def _hist_signature_html(signatures):
@@ -6360,18 +6393,18 @@ def render_buku_kerja_v341():
                     w=max(1,int(iw*scale)); h=max(1,int(ih*scale))
                 except Exception:
                     w,h=90,60
-                src=_hist_img_data(b64)
-                items.append(f'<div class="bk-hist-photo-item" style="display:flex;align-items:center;justify-content:center;min-height:76px;"><img src="{src}" style="width:{w}px;height:{h}px;object-fit:contain;display:block;"></div>')
+                src=_hist_img_data(b64,thumbnail=True)
+                items.append(f'<div class="bk-hist-photo-item" style="display:flex;align-items:center;justify-content:center;min-height:76px;"><img src="{src}" loading="lazy" decoding="async" style="width:{w}px;height:{h}px;object-fit:contain;display:block;"></div>')
             if not items:
                 return ''
             return '<div class="bk-hist-photo-grid" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;max-width:230px;">'+''.join(items)+'</div>'
 
         def _hist_daily_photo_html(photos):
             encoded=next((p for p in (photos or []) if p),None)
-            src=_hist_img_data(encoded)
+            src=_hist_img_data(encoded,thumbnail=True)
             if not src:
                 return ''
-            return ('<div class="bk-daily-photo-wrap"><img class="bk-daily-photo" '
+            return ('<div class="bk-daily-photo-wrap"><img class="bk-daily-photo" loading="lazy" decoding="async" '
                     f'src="{src}" alt="Foto gabungan laporan harian"></div>')
 
         history_delete_ids=[]
@@ -6513,8 +6546,8 @@ def render_buku_kerja_v341():
             .photo{{vertical-align:middle;}}
             table td{{border:1px solid #000;padding:5px;}}
             .bk-history-table .bk-hist-doc .bk-daily-doc{{width:100%;flex:1 1 100%;min-width:0;margin:2px 0 !important;}}
-            .bk-history-table .bk-hist-doc .bk-daily-photo-wrap{{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;}}
-            .bk-history-table .bk-hist-doc img.bk-daily-photo{{width:100% !important;max-width:100% !important;height:auto !important;max-height:none !important;object-fit:contain;display:block;}}
+            .bk-history-table .bk-hist-doc .bk-daily-photo-wrap{{flex:1;min-width:0;max-width:160px;display:flex;align-items:center;justify-content:center;}}
+            .bk-history-table .bk-hist-doc img.bk-daily-photo{{width:auto !important;max-width:100% !important;height:auto !important;max-height:120px !important;object-fit:contain;display:block;}}
             .bk-history-table .bk-daily-doc .bk-hist-action{{flex:none;}}
           </style>
         </div>
@@ -6524,14 +6557,18 @@ def render_buku_kerja_v341():
             if not _is_daily_report(daily_activity):
                 continue
             daily_prefix='bk_daily_saved_'+str(daily_session.get('id'))
-            with st.expander('Buka Laporan Harian — '+format_activity_date_id(daily_date)):
+            panel=st.expander('Buka Laporan Harian — '+format_activity_date_id(daily_date),
+                              key=daily_prefix+'_open',on_change='rerun')
+            if not panel.open:
+                continue
+            with panel:
                 daily_note=str(daily_session.get('note') or '')
                 st.code(daily_note,language=None,wrap_lines=True,height=240)
                 daily_photo=next((_from_b64(p) for p in daily_session.get('photos',[]) if p),None)
                 if daily_photo:
-                    st.image(daily_photo,width='stretch')
-                st.caption('Salin teks atau unduh teks dan gambar untuk dikirim melalui WhatsApp.')
-                _render_daily_report_downloads(data,daily_date,daily_note,daily_photo,daily_prefix)
+                    preview=_daily_report_image_bytes(daily_photo,320,240,78)
+                    st.image(preview,width='content')
+                st.caption('Gunakan tombol salin pada teks untuk menyalin laporan.')
         # The history table is HTML so its icon cannot itself be a Streamlit
         # widget. Forward clicks to native buttons without navigating/reloading.
         st.markdown('<style>[class*="st-key-bk_delete_bridge_v36490_"],[class*="st-key-bk_edit_bridge_v120_"]{display:none !important}</style>',unsafe_allow_html=True)
