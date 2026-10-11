@@ -5809,6 +5809,147 @@ def _extend_book_preview_filter(saved_date):
     st.session_state['bk_re_v350']=state['end']
 
 
+def _hide_other_multiselect_bulk_actions_v126():
+    """Keep the native selector and suppress only its generated bulk actions."""
+    with st.container(key='bk_other_select_guard_v126'):
+        st.markdown('<style>.st-key-bk_other_select_guard_v126{display:none !important}</style>',unsafe_allow_html=True)
+        components.html(r'''
+        <script>
+        (() => { try {
+          const host=window.parent, doc=host.document;
+          if(host.__bkOtherSelectV126) host.__bkOtherSelectV126();
+          const selector='[class*="st-key-bk_subactivities_"] [data-testid="stMultiSelect"] input[role="combobox"]';
+          const originals=new WeakMap();
+          let input=null, popup=null, layout=null, frame=0, disposed=false, direction=1, skipping=false;
+          const put=(node,property,value)=>{if(node.style[property]!==value) node.style[property]=value;};
+          const restoreRow=node=>{
+            const old=originals.get(node);
+            if(!old) return;
+            put(node,'display',old.display);
+            if(old.aria===null) node.removeAttribute('aria-hidden');
+            else node.setAttribute('aria-hidden',old.aria);
+            node.removeAttribute('data-bk-other-bulk');
+          };
+          const restoreLayout=()=>{
+            if(!layout) return;
+            put(layout.content,'marginTop',layout.margin);
+            put(layout.content,'position',layout.position);
+            put(layout.viewport,'maxHeight',layout.maximum);
+            layout=null;
+          };
+          const clearPopup=()=>{
+            popupObserver.disconnect();
+            if(popup) popup.querySelectorAll('[data-bk-other-bulk="1"]').forEach(restoreRow);
+            restoreLayout(); popup=null;
+          };
+          const schedule=()=>{
+            if(!disposed&&!frame) frame=host.requestAnimationFrame(()=>{frame=0;update();});
+          };
+          const inputObserver=new host.MutationObserver(schedule);
+          const popupObserver=new host.MutationObserver(schedule);
+          const findMenu=()=>{
+            if(!input||input.getAttribute('aria-expanded')!=='true') return null;
+            const active=doc.getElementById(input.getAttribute('aria-activedescendant'));
+            // Streamlit's virtual dropdown does not carry the aria-controls ID.
+            return active?.closest('[data-testid="stSelectboxVirtualDropdown"]')||
+              Array.from(doc.querySelectorAll('[data-testid="stSelectboxVirtualDropdown"]'))
+                .filter(node=>node.getClientRects().length).pop()||null;
+          };
+          const activeRow=()=>doc.getElementById(input?.getAttribute('aria-activedescendant'))||
+            popup?.querySelector('[role="option"][aria-selected="true"]');
+          const bind=()=>{
+            const current=doc.querySelector(selector);
+            if(current===input) return;
+            inputObserver.disconnect(); clearPopup(); input=current;
+            if(input) inputObserver.observe(input.closest('[data-testid="stMultiSelect"]'),{
+              childList:true,subtree:true,attributes:true,
+              attributeFilter:['aria-controls','aria-expanded','aria-activedescendant']
+            });
+          };
+          const skipBulk=()=>{
+            if(skipping||!input) return;
+            skipping=true;
+            input.dispatchEvent(new host.KeyboardEvent('keydown',{
+              key:direction<0?'ArrowUp':'ArrowDown',code:direction<0?'ArrowUp':'ArrowDown',
+              keyCode:direction<0?38:40,which:direction<0?38:40,bubbles:true,cancelable:true
+            }));
+            host.setTimeout(()=>{skipping=false;},0);
+          };
+          function update(){
+            bind();
+            const current=findMenu();
+            if(current!==popup){
+              clearPopup(); popup=current;
+              if(popup) popupObserver.observe(popup,{
+                childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['style','aria-selected']
+              });
+            }
+            if(!popup) return;
+            const rows=Array.from(popup.querySelectorAll('[role="option"]'));
+            if(!rows.length){restoreLayout();return;}
+            const content=rows[0].parentElement;
+            const rowHeight=parseFloat(rows[0].style.height)||40;
+            const totalHeight=parseFloat(content.style.height);
+            // Streamlit adds a bulk row only when two or more choices remain.
+            const hasBulk=Number.isFinite(totalHeight)&&Math.round(totalHeight/rowHeight)>2;
+            const bulk=hasBulk?rows.find(row=>parseFloat(row.style.top||'0')===0&&
+              /^(Select all|Select \d+ matches)$/.test(row.textContent.trim())):null;
+            rows.forEach(row=>{
+              if(row===bulk){
+                if(!originals.has(row)) originals.set(row,{display:row.style.display,aria:row.getAttribute('aria-hidden')});
+                put(row,'display','none');
+                if(row.getAttribute('aria-hidden')!=='true') row.setAttribute('aria-hidden','true');
+                if(row.dataset.bkOtherBulk!=='1') row.dataset.bkOtherBulk='1';
+              } else if(row.dataset.bkOtherBulk==='1') restoreRow(row);
+            });
+            if(hasBulk){
+              let viewport=content.parentElement;
+              while(viewport&&viewport!==popup&&!/auto|scroll/.test(viewport.style.overflow)) viewport=viewport.parentElement;
+              if(!viewport) viewport=content.parentElement;
+              if(!layout||layout.content!==content||layout.viewport!==viewport){
+                restoreLayout();
+                layout={content,viewport,margin:content.style.marginTop,position:content.style.position,maximum:viewport.style.maxHeight};
+              }
+              put(content,'position','relative');
+              put(content,'marginTop',(-rowHeight)+'px');
+              put(viewport,'maxHeight',Math.max(rowHeight,totalHeight-rowHeight)+'px');
+            } else restoreLayout();
+            const active=activeRow();
+            if(active&&active.dataset.bkOtherBulk==='1') skipBulk();
+          }
+          const onIntent=event=>{
+            if(event.target instanceof host.Element&&event.target.closest('[class*="st-key-bk_subactivities_"]')){
+              bind(); schedule();
+            }
+          };
+          const onKey=event=>{
+            if(event.target!==input) return;
+            if(event.key==='ArrowUp') direction=-1;
+            else if(event.key==='ArrowDown') direction=1;
+            const active=activeRow();
+            if(event.key==='Enter'&&active&&active.dataset.bkOtherBulk==='1'){
+              event.preventDefault(); event.stopImmediatePropagation(); skipBulk();
+            }
+          };
+          const cleanup=()=>{
+            disposed=true; if(frame) host.cancelAnimationFrame(frame);
+            inputObserver.disconnect(); clearPopup();
+            doc.removeEventListener('focusin',onIntent,true);
+            doc.removeEventListener('pointerdown',onIntent,true);
+            doc.removeEventListener('keydown',onKey,true);
+            if(host.__bkOtherSelectV126===cleanup) delete host.__bkOtherSelectV126;
+          };
+          host.__bkOtherSelectV126=cleanup;
+          doc.addEventListener('focusin',onIntent,true);
+          doc.addEventListener('pointerdown',onIntent,true);
+          doc.addEventListener('keydown',onKey,true);
+          window.addEventListener('pagehide',cleanup,{once:true});
+          bind(); schedule();
+        } catch (_) {} })();
+        </script>
+        ''',height=0)
+
+
 def _save_other_activities_v121(data, items, d):
     """Build every selected activity before persisting the batch once."""
     import copy
@@ -5951,46 +6092,15 @@ def render_buku_kerja_v341():
                 other_titles=[]
                 with _sub_col:
                     if form_group == ACTIVITY_GROUP_OTHER and not edit:
-                        choice_prefix=f'bk_subactivities_{form_token}'
-                        previous_choices=st.session_state.get(choice_prefix,[])
-                        for option in sub_options:
-                            option_id=next(a['id'] for a in acts if a['title']==option)
-                            option_key=f'{choice_prefix}_{option_id}'
-                            if option_key not in st.session_state:
-                                st.session_state[option_key]=option in previous_choices
-                        chosen=[option for option in sub_options if st.session_state.get(
-                            f"{choice_prefix}_{next(a['id'] for a in acts if a['title']==option)}",False)]
-                        choice_text=(sub_label(chosen[0]) if len(chosen)==1 else
-                                     f'{len(chosen)} Sub Kegiatan' if chosen else 'Pilih Sub Kegiatan')
-                        with st.container(key=choice_prefix+'_box'):
-                            st.markdown('''<style>
-                            [class*="st-key-bk_subactivities_"] .bk-subactivity-label{
-                                font-size:12px;font-weight:800;color:#244d73;
-                                line-height:1.35;letter-spacing:.01em;margin-bottom:8px;}
-                            [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"]{
-                                width:100%;min-height:43px;background:#fff !important;
-                                border:1px solid #b8d1e6 !important;box-shadow:none !important;
-                                color:#31333f !important;text-align:left;
-                                justify-content:space-between !important;}
-                            [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"]{
-                                flex:1;text-align:left;}
-                            [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"] p{
-                                font-size:14px !important;font-weight:400 !important;letter-spacing:normal !important;
-                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-                            @media(max-width:700px){
-                                [class*="st-key-bk_subactivities_"] [data-testid="stPopoverButton"] p{
-                                    font-size:12px !important;}}
-                            </style><div class="bk-subactivity-label">Sub Kegiatan</div>''',unsafe_allow_html=True)
-                            with st.popover(choice_text,key=choice_prefix+'_picker',width='stretch'):
-                                for option in sub_options:
-                                    option_id=next(a['id'] for a in acts if a['title']==option)
-                                    if st.checkbox(sub_label(option),key=f'{choice_prefix}_{option_id}'):
-                                        other_titles.append(option)
-                        st.session_state[choice_prefix]=other_titles
+                        other_titles=st.multiselect('Sub Kegiatan',sub_options,
+                                                    format_func=sub_label,placeholder='Pilih Sub Kegiatan',
+                                                    key=f'bk_subactivities_{form_token}')
                         title=other_titles[0] if other_titles else ''
                     else:
                         title=st.selectbox('Sub Kegiatan',sub_options,index=sub_idx,
                                            format_func=sub_label,key=f'bk_subactivity_{form_token}')
+            if form_group == ACTIVITY_GROUP_OTHER and not edit:
+                _hide_other_multiselect_bulk_actions_v126()
             aid=next((a['id'] for a in acts if a['title']==title), aid_default)
 
             # Pilihan petugas tetap DI LUAR st.form agar perubahan petugas
