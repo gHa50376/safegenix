@@ -3433,6 +3433,28 @@ def _save_session_from_form(data, sid, activity_id, d, note, members, photos, si
     if persist:
         save_book_data(data)
 
+def _book_numbered_rows(data, activity_id=None, start=None, end=None):
+    """Nomor bulanan dari seluruh Buku Kerja; filter hanya memilih baris cetak.
+
+    Kegiatan Lainnya pada tanggal sama tetap satu nomor. Nomor dihitung
+    sebelum filter tanggal/jenis diterapkan, sehingga cetak bertahap dan
+    Preview memakai nomor yang sama dengan Buku Kerja sebulan penuh.
+    """
+    month_counters = {}
+    numbered = []
+    for d, entries in _book_group_other_same_day(_book_sessions_flat(data)):
+        month_key = (d.year, d.month)
+        month_counters[month_key] = month_counters.get(month_key, 0) + 1
+        report_no = month_counters[month_key]
+        if (start and d < start) or (end and d > end):
+            continue
+        visible_entries = [(activity, sess) for activity, sess in entries
+                           if not activity_id or activity.get('id') == activity_id]
+        if visible_entries:
+            numbered.append((report_no, d, visible_entries))
+    return numbered
+
+
 @st.cache_data(ttl=600, max_entries=4, show_spinner=False)
 def _book_pdf(data, start=None, end=None, activity_id=None):
     """Cetak Buku Kerja dalam format laporan lama.
@@ -3448,11 +3470,7 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
     """
     from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, PageBreak, KeepInFrame
 
-    rows = _book_sessions_flat(data, activity_id, start, end)
-    # V36.4.44: seluruh Kegiatan Lainnya pada tanggal yang sama ditampilkan
-    # sebagai SATU baris Buku Kerja. Penyimpanan sesi tetap terpisah agar
-    # masing-masing kegiatan masih dapat diedit/dihapus secara individual.
-    display_rows = _book_group_other_same_day(rows)
+    numbered_sessions = _book_numbered_rows(data, activity_id, start, end)
     bio = io.BytesIO()
     doc = BaseDocTemplate(
         bio,
@@ -3499,8 +3517,8 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
     center_small = small_bold.clone('bk_pdf_center_small_v36415')
     center_small.alignment = 1
 
-    if not display_rows:
-        display_rows = [(None, [({'id':'','title':'Buku Kerja'}, None)])]
+    if not numbered_sessions:
+        numbered_sessions = [('', None, [({'id':'','title':'Buku Kerja'}, None)])]
 
     def _photo_flow(b64, daily_report=False):
         """Foto utuh, proporsional, dengan orientasi EXIF yang benar."""
@@ -3650,22 +3668,6 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
             ('ALIGN', (0,0), (-1,-1), 'LEFT'),
         ]))
         return sig_table
-
-    # Nomor laporan dihitung sekali untuk seluruh hasil cetak agar tidak
-    # kembali ke 1 hanya karena berganti halaman. Nomor reset saat bulan
-    # kegiatan berubah, sesuai bulan pada tanggal kegiatan.
-    numbered_sessions = []
-    current_month = None
-    current_month_no = 0
-    for d, entries in display_rows:
-        month_key = (d.year, d.month) if d else None
-        if month_key != current_month:
-            current_month = month_key
-            current_month_no = 1 if month_key is not None else 0
-        elif month_key is not None:
-            current_month_no += 1
-        report_no = current_month_no if month_key is not None else ''
-        numbered_sessions.append((report_no, d, entries))
 
     # V36.4.41: pagination PDF Buku Kerja bersifat dinamis, tetapi tetap
     # maksimal 4 kegiatan per lembar. Sebelumnya data dipotong kaku per 4
@@ -6458,20 +6460,9 @@ def render_buku_kerja_v341():
     if not rows:
         if valid_period: st.info('Tidak ada kegiatan pada periode ini.')
     else:
-        # V36.4.44: Kegiatan Lainnya pada tanggal yang sama adalah satu baris
-        # Buku Kerja. Nomor laporan dihitung setelah penggabungan sehingga
-        # kelompok tersebut hanya memakai satu nomor.
-        display_rows=_book_group_other_same_day(rows)
-        month_counters={}
-        numbered_rows=[]
-        for d,entries in display_rows:
-            month_key=(d.year,d.month) if d else None
-            if month_key is None:
-                report_no=''
-            else:
-                month_counters[month_key]=month_counters.get(month_key,0)+1
-                report_no=month_counters[month_key]
-            numbered_rows.append((report_no,d,entries))
+        # Preview dan PDF memakai nomor dari seluruh kegiatan bulan tersebut,
+        # termasuk kegiatan di luar filter, dengan penggabungan Lainnya sama.
+        numbered_rows=_book_numbered_rows(data,aid,rs,re_)
 
         def _hist_img_data(b64, thumbnail=False):
             raw=_from_b64(b64)
