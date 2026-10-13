@@ -3446,14 +3446,15 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
     - TTD ditampilkan sebagai gambar di kolom RENCANA KERJA, tepat di bawah
       nama kegiatan, dengan ukuran ringkas agar tidak menghabiskan ruang.
     """
+    from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, PageBreak, KeepInFrame
+
     rows = _book_sessions_flat(data, activity_id, start, end)
-    has_daily_reports=any(_is_daily_report(a) for _,a,_ in rows)
     # V36.4.44: seluruh Kegiatan Lainnya pada tanggal yang sama ditampilkan
     # sebagai SATU baris Buku Kerja. Penyimpanan sesi tetap terpisah agar
     # masing-masing kegiatan masih dapat diedit/dihapus secara individual.
     display_rows = _book_group_other_same_day(rows)
     bio = io.BytesIO()
-    doc = SimpleDocTemplate(
+    doc = BaseDocTemplate(
         bio,
         pagesize=landscape(A5),
         leftMargin=18, rightMargin=18, topMargin=18, bottomMargin=18,
@@ -3470,6 +3471,8 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
     title_style.leading = 13
     title_style.alignment = 1
     title_style.textColor = colors.black
+    title_style.spaceBefore = 0
+    title_style.spaceAfter = 0
 
     small = styles['Normal'].clone('bk_pdf_small_v36414')
     small.fontName = 'Helvetica'
@@ -3499,177 +3502,112 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
     if not display_rows:
         display_rows = [(None, [({'id':'','title':'Buku Kerja'}, None)])]
 
-    def _photo_flow(b64):
-        """Return one proportional reportlab image for KETERANGAN."""
+    def _photo_flow(b64, daily_report=False):
+        """Foto utuh, proporsional, dengan orientasi EXIF yang benar."""
         raw = _from_b64(b64)
         if not raw:
             return None
         try:
-            pil_im = Image.open(io.BytesIO(raw))
-            iw, ih = pil_im.size
+            with Image.open(io.BytesIO(raw)) as source:
+                orientation = source.getexif().get(274, 1)
+                image = ImageOps.exif_transpose(source)
+                iw, ih = image.size
             if not iw or not ih:
                 return None
-            # The KETERANGAN column is about 156 pt wide.  Use orientation-aware
-            # standard bounds while always preserving the original aspect ratio.
-            if iw >= ih:          # landscape
+            if orientation != 1 or daily_report:
+                raw = _daily_report_image_bytes(raw, 800, 1000, 82)
+                with Image.open(io.BytesIO(raw)) as image:
+                    iw, ih = image.size
+            if daily_report:
+                max_w, max_h = 128.0, 180.0
+            elif iw >= ih:
                 max_w, max_h = 72.0, 46.0
-            else:                  # portrait
-                max_w, max_h = 48.0, 62.0
+            else:
+                max_w, max_h = 47.0, 62.0
             scale = min(max_w / iw, max_h / ih)
             return RLImage(io.BytesIO(raw), width=max(1.0, iw * scale),
-                           height=max(1.0, ih * scale))
+                           height=max(1.0, ih * scale), hAlign='CENTER')
         except Exception:
             return None
 
-    def _shsp_photo_row(photo_slots):
-        """Satu Hari Satu Pasal: keep Pagi/Siang/Malam in one horizontal row."""
-        slots=list(photo_slots or [])[:3]
-        while len(slots) < 3:
-            slots.append('')
-        cells=[]
-        for b64 in slots:
-            raw=_from_b64(b64) if b64 else None
-            if not raw:
-                cells.append('')
-                continue
-            try:
-                pil_im=Image.open(io.BytesIO(raw))
-                iw,ih=pil_im.size
-                if not iw or not ih:
-                    cells.append('')
-                    continue
-                # Three fixed slots must fit inside the 156 pt KETERANGAN column.
-                # Preserve aspect ratio while keeping every photo on the same row.
-                max_w,max_h=47.0,68.0
-                scale=min(max_w/iw,max_h/ih)
-                cells.append(RLImage(io.BytesIO(raw),width=max(1.0,iw*scale),height=max(1.0,ih*scale)))
-            except Exception:
-                cells.append('')
-        t=Table([cells],colWidths=[50,50,50],hAlign='CENTER')
-        t.setStyle(TableStyle([
-            ('ALIGN',(0,0),(-1,-1),'CENTER'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-            ('LEFTPADDING',(0,0),(-1,-1),0),
-            ('RIGHTPADDING',(0,0),(-1,-1),0),
-            ('TOPPADDING',(0,0),(-1,-1),0),
-            ('BOTTOMPADDING',(0,0),(-1,-1),0),
-        ]))
-        return t
+    def _documentation_photo_grid(photo_values):
+        """Maksimal 3 potret atau 2 lanskap per baris, sesuai urutan foto.
 
-    def _cek_emplasemen_photo_grid(photo_slots):
-        """Cek Emplasemen: maksimal 8 foto dalam grid ringkas 4 x 2.
-
-        Grid khusus ini mencegah delapan foto tersusun vertikal sehingga tinggi
-        satu baris tabel melebihi tinggi halaman A5 landscape. Foto tetap
-        proporsional dan hanya area KETERANGAN yang diubah.
+        Satu foto potret memakai 2 dari 6 slot; lanskap/persegi memakai 3.
+        Baris campuran memakai batas yang sama tanpa memotong gambar.
         """
-        photos=[b64 for b64 in (photo_slots or []) if b64][:8]
-        if not photos:
+        images = []
+        for encoded in photo_values or []:
+            image = _photo_flow(encoded)
+            if image is not None:
+                images.append(image)
+        if not images:
             return ''
-        cells=[]
-        for b64 in photos:
-            raw=_from_b64(b64)
-            if not raw:
+        if len(images) == 1:
+            return images[0]
+
+        packed_rows = []
+        row, used = [], 0
+        for image in images:
+            units = 3 if image.drawWidth >= image.drawHeight else 2
+            if row and used + units > 6:
+                packed_rows.append(row)
+                row, used = [], 0
+            row.append((image, units))
+            used += units
+        if row:
+            packed_rows.append(row)
+
+        grid_rows = []
+        for row in packed_rows:
+            cells = [image for image, _ in row]
+            widths = [150.0 * units / 6 for _, units in row]
+            remaining = 150.0 - sum(widths)
+            if remaining > 0:
                 cells.append('')
-                continue
-            try:
-                pil_im=Image.open(io.BytesIO(raw))
-                iw,ih=pil_im.size
-                if not iw or not ih:
-                    cells.append('')
-                    continue
-                # Empat slot harus muat pada kolom KETERANGAN 156 pt.
-                # Batas persegi menjaga tinggi maksimum dua baris tetap aman.
-                max_w,max_h=34.0,34.0
-                scale=min(max_w/iw,max_h/ih)
-                cells.append(RLImage(io.BytesIO(raw),
-                                     width=max(1.0,iw*scale),
-                                     height=max(1.0,ih*scale)))
-            except Exception:
-                cells.append('')
-        grid=[]
-        for i in range(0,len(cells),4):
-            row=cells[i:i+4]
-            while len(row)<4:
-                row.append('')
-            grid.append(row)
-        t=Table(grid,colWidths=[37.5,37.5,37.5,37.5],hAlign='CENTER')
-        t.setStyle(TableStyle([
-            ('ALIGN',(0,0),(-1,-1),'CENTER'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-            ('LEFTPADDING',(0,0),(-1,-1),0),
-            ('RIGHTPADDING',(0,0),(-1,-1),0),
-            ('TOPPADDING',(0,0),(-1,-1),1),
-            ('BOTTOMPADDING',(0,0),(-1,-1),1),
+                widths.append(remaining)
+            line = Table([cells], colWidths=widths, hAlign='CENTER',
+                         splitByRow=0, splitInRow=0)
+            line.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('LEFTPADDING', (0,0), (-1,-1), 1),
+                ('RIGHTPADDING', (0,0), (-1,-1), 1),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ]))
+            grid_rows.append([line])
+        grid = Table(grid_rows, colWidths=[150.0], hAlign='CENTER',
+                     splitByRow=0, splitInRow=0)
+        grid.setStyle(TableStyle([
+            ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 0),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ('BOTTOMPADDING', (0,-1), (-1,-1), 0),
         ]))
-        return t
+        return grid
 
     def _other_same_day_photo_grid(entries):
-        """Compact all Kegiatan Lainnya photos from one date in one cell.
-
-        Four thumbnails per line keeps the combined row short enough for A5
-        landscape while preserving every stored photo (max 8 per activity).
-        Libur/Cuti naturally contribute no photos.
-        """
-        photo_values=[]
-        daily_photos=[]
-        for _activity, _sess in (entries or []):
-            if not _sess:
+        """Gabungkan dokumentasi Kegiatan Lainnya tanpa mengubah datanya."""
+        photo_values = []
+        single_daily_photo = False
+        for activity, sess in entries or []:
+            if not sess:
                 continue
-            _key=' '.join(str((_activity or {}).get('title') or '').strip().lower().split())
-            if _key in ('libur','cuti'):
+            key = ' '.join(str((activity or {}).get('title') or '').strip().lower().split())
+            if key in ('libur', 'cuti'):
                 continue
-            if _is_daily_report(_activity):
-                for encoded in [v for v in (_sess.get('photos') or []) if v][:1]:
-                    try:
-                        raw=_daily_report_image_bytes(_from_b64(encoded),800,1000,82)
-                        with Image.open(io.BytesIO(raw)) as image:
-                            iw,ih=image.size
-                        scale=min(128.0/iw,180.0/ih)
-                        daily_photos.append(RLImage(io.BytesIO(raw),width=iw*scale,height=ih*scale,hAlign='CENTER'))
-                    except Exception:
-                        continue
-                continue
-            photo_values.extend([x for x in (_sess.get('photos') or []) if x][:8])
-        if not photo_values:
-            return daily_photos or ''
-        cells=[]
-        for b64 in photo_values:
-            raw=_from_b64(b64)
-            if not raw:
-                continue
-            try:
-                pil_im=Image.open(io.BytesIO(raw))
-                iw,ih=pil_im.size
-                if not iw or not ih:
-                    continue
-                max_w,max_h=34.0,32.0
-                scale=min(max_w/iw,max_h/ih)
-                cells.append(RLImage(io.BytesIO(raw),
-                                     width=max(1.0,iw*scale),
-                                     height=max(1.0,ih*scale)))
-            except Exception:
-                continue
-        if not cells:
-            return daily_photos or ''
-        grid=[]
-        for i in range(0,len(cells),4):
-            row=cells[i:i+4]
-            while len(row)<4:
-                row.append('')
-            grid.append(row)
-        t=Table(grid,colWidths=[37.5,37.5,37.5,37.5],hAlign='CENTER')
-        t.setStyle(TableStyle([
-            ('ALIGN',(0,0),(-1,-1),'CENTER'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-            ('LEFTPADDING',(0,0),(-1,-1),0),
-            ('RIGHTPADDING',(0,0),(-1,-1),0),
-            ('TOPPADDING',(0,0),(-1,-1),1),
-            ('BOTTOMPADDING',(0,0),(-1,-1),1),
-        ]))
-        if daily_photos:
-            return [t,Spacer(1,3)]+daily_photos
-        return t
+            daily = _is_daily_report(activity)
+            values = [value for value in (sess.get('photos') or []) if value]
+            values = values[:1] if daily else values[:8]
+            if not photo_values and values:
+                single_daily_photo = daily
+            photo_values.extend(values)
+        # Satu foto gabungan Laporan Harian tetap memakai ukuran cetak khusus.
+        if len(photo_values) == 1 and single_daily_photo:
+            return _photo_flow(photo_values[0], daily_report=True) or ''
+        return _documentation_photo_grid(photo_values)
 
     def _signature_block(signatures):
         """Compact TTD block placed under the activity title in RENCANA KERJA."""
@@ -3761,14 +3699,14 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
     ]
     col_widths = [43, 81, 183, 38, 38, 156]
 
-    def _make_book_table(body_rows):
+    def _make_book_table(body_rows, allow_row_split=False):
         table = Table(
             [header_top, header_bottom, header_numbers] + body_rows,
             colWidths=col_widths,
             repeatRows=3,
             hAlign='CENTER',
             splitByRow=1,
-            splitInRow=1 if has_daily_reports else 0,
+            splitInRow=1 if allow_row_split else 0,
         )
         table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,2), colors.HexColor('#22c55e')),
@@ -3791,7 +3729,7 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
             ('TOPPADDING', (0,0), (-1,-1), 3),
             ('BOTTOMPADDING', (0,0), (-1,-1), 3),
         ]))
-        if has_daily_reports:
+        if allow_row_split:
             # A long report may continue on several pages. Align its contents
             # at the top so the photo and date stay with the beginning of it.
             for row_index,body_row in enumerate(body_rows,3):
@@ -3888,9 +3826,9 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
             # V36.4.43: Libur/Cuti tidak menampilkan dokumentasi di Cetak/PDF.
             photo_flow = []
         elif key == 'satu hari satu pasal':
-            photo_flow = _shsp_photo_row(sess.get('photos') or [])
+            photo_flow = _documentation_photo_grid((sess.get('photos') or [])[:3])
         elif key == 'cek emplasemen oleh ks':
-            photo_flow = _cek_emplasemen_photo_grid(sess.get('photos') or [])
+            photo_flow = _documentation_photo_grid((sess.get('photos') or [])[:8])
         elif key == 'pengawasan langsir':
             # Satu kegiatan Langsir = tepat satu foto di kolom KETERANGAN.
             # Tidak ada uraian, petugas, atau tanda tangan.
@@ -3901,13 +3839,7 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
                 if img is not None:
                     photo_flow.append(img)
         else:
-            photo_flow = []
-            for b64 in (sess.get('photos') or [])[:8]:
-                img = _photo_flow(b64)
-                if img is not None:
-                    if photo_flow:
-                        photo_flow.append(Spacer(1, 2))
-                    photo_flow.append(img)
+            photo_flow = _documentation_photo_grid((sess.get('photos') or [])[:8])
 
         return [
             Paragraph(str(report_no), center_small),
@@ -3923,31 +3855,64 @@ def _book_pdf(data, start=None, end=None, activity_id=None):
         for report_no, d, entries in numbered_sessions
     ]
 
-    story = []
     title_probe = Paragraph('PROGRAM DAN REALISASI KERJA KEPALA STASIUN', title_style)
     _, title_h = title_probe.wrap(doc.width, doc.height)
-    # Sedikit toleransi untuk Spacer dan perhitungan rounding ReportLab.
-    max_table_h = max(40, doc.height - title_h - 9)
+    # Frame tanpa padding tersembunyi. Judul berada di luar frame tabel sehingga
+    # ruang yang diukur persis sama dengan ruang cetak pada SETIAP halaman.
+    frame_h = doc.height - title_h - 6
+    max_table_h = frame_h - 1  # toleransi pembulatan, bukan pengurangan isi
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, frame_h,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
+                  id='buku_kerja_a5')
 
+    def _draw_book_title(canvas, document):
+        canvas.saveState()
+        title_probe.drawOn(canvas, document.leftMargin,
+                           document.pagesize[1] - document.topMargin - title_h)
+        canvas.restoreState()
+
+    doc.addPageTemplates(PageTemplate(id='buku_kerja_a5', frames=[frame],
+                                     onPage=_draw_book_title))
+    _, header_h = _make_book_table([]).wrap(doc.width, max_table_h)
+    story = []
     page_start = 0
     while page_start < len(all_body_rows):
         take = min(4, len(all_body_rows) - page_start)
-        # Cari jumlah terbesar (maks. 4) yang benar-benar muat pada satu halaman.
-        while take > 1:
-            probe = _make_book_table(all_body_rows[page_start:page_start + take])
-            _, probe_h = probe.wrap(doc.width, max_table_h)
-            if probe_h <= max_table_h:
+        # Kurangi jumlah kegiatan, bukan ukuran isi, jika satu halaman penuh.
+        while True:
+            page_body = all_body_rows[page_start:page_start + take]
+            table = _make_book_table(page_body)
+            _, table_h = table.wrap(doc.width, max_table_h)
+            if table_h <= max_table_h or take == 1:
                 break
             take -= 1
 
-        page_body = all_body_rows[page_start:page_start + take]
-        story.append(Paragraph('PROGRAM DAN REALISASI KERJA KEPALA STASIUN', title_style))
-        story.append(Spacer(1, 6))
-        story.append(_make_book_table(page_body))
+        if table_h > max_table_h:
+            entries = numbered_sessions[page_start][2]
+            if any(_is_daily_report(activity) for activity, _ in entries):
+                # Hanya satu Laporan Harian yang lebih tinggi daripada seluruh
+                # halaman boleh berlanjut. Kehadirannya tidak membuka pemisahan
+                # baris kegiatan lain yang sebenarnya muat pada satu halaman.
+                table = _make_book_table(page_body, allow_row_split=True)
+            else:
+                # Data lama dapat berisi dokumentasi gabungan yang sangat banyak.
+                # Pertahankan semua isi satu kegiatan dalam satu halaman sendiri.
+                max_cell_h = max(1, max_table_h - header_h - 7)
+                fitted_row = []
+                for width, cell in zip(col_widths, page_body[0]):
+                    if isinstance(cell, (list, tuple)):
+                        content = list(cell)
+                    elif cell == '':
+                        content = []
+                    else:
+                        content = [cell]
+                    fitted_row.append(KeepInFrame(width - 6, max_cell_h, content,
+                                                 mode='shrink'))
+                table = _make_book_table([fitted_row])
 
+        story.append(table)
         page_start += take
         if page_start < len(all_body_rows):
-            from reportlab.platypus import PageBreak
             story.append(PageBreak())
 
     doc.build(story)
