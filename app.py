@@ -8049,6 +8049,7 @@ def _v421_review_weekly_pages(pages, photos):
                 rows.append([str(r),p.get(f'{r}.Hari_Tanggal',''),'Ruang PPKA',p.get(f'{r}.Nama/_Nipp',''),p.get(f'{r}.Hasil_Pengawasan',''),p.get(f'{r}.TL',''),_v421_photo_cell([b] if b else [])])
         if rows:
             st.markdown(_v421_page_shell(f'Safety Talk Mingguan — Pengawasan CCTV — Lembar {i}',_v421_table(['No','Hari / Tanggal Pengawasan','Obyek Pengawasan','Pengawasan kepada (Nama / NIPP)','Hasil Pengawasan','Tindak Lanjut','Dokumentasi'],rows)),unsafe_allow_html=True)
+    _v421_evaluation_review(pages['eval'][0]['Hasil_Evaluasi'], 'weekly')
     langsir=pages.get('langsir',[]) or []
     if langsir:
         for page_no in range(1,(len(langsir)+2)//3+1):
@@ -8221,8 +8222,6 @@ else:
                      'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
     _v421_review_weekly_pages(pages, photos)
 
-    # One evaluation review only. Editing is optional and there is no Save button.
-    _v421_evaluation_review(pages['eval'][0]['Hasil_Evaluasi'],'weekly')
     pages=_v421_pages_weekly()
     # One action only: the download button generates/downloads the current PPT.
     general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
