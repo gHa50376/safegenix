@@ -13,6 +13,8 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from copy import deepcopy
+from contextlib import contextmanager
+from threading import Lock
 from zipfile import ZipFile, ZIP_DEFLATED, BadZipFile
 
 try:
@@ -5744,6 +5746,161 @@ def _validate_daily_report(payload):
     return ''
 
 
+def _report_memory_budget_v129():
+    """RSS and a process budget: tested workload envelope, container headroom."""
+    used = None
+    try:
+        match = re.search(r'(?m)^VmRSS:\s+(\d+)\s+kB', Path('/proc/self/status').read_text())
+        if match:
+            used = int(match.group(1)) * 1024
+    except (OSError, ValueError):
+        pass
+    roots = [Path('/sys/fs/cgroup'), Path('/sys/fs/cgroup/memory')]
+    try:
+        for line in Path('/proc/self/cgroup').read_text().splitlines():
+            hierarchy, controllers, relative = line.split(':', 2)
+            if hierarchy == '0' or 'memory' in controllers.split(','):
+                roots.append(Path('/sys/fs/cgroup') / relative.lstrip('/'))
+                roots.append(Path('/sys/fs/cgroup/memory') / relative.lstrip('/'))
+    except (OSError, ValueError):
+        pass
+    budgets = []
+    for root in dict.fromkeys(roots):
+        for maximum, current in (('memory.max', 'memory.current'),
+                                 ('memory.limit_in_bytes', 'memory.usage_in_bytes')):
+            try:
+                limit = int((root / maximum).read_text().strip())
+                charged = int((root / current).read_text().strip())
+                if not 0 < limit < (1 << 60):
+                    continue
+                inactive = 0
+                try:
+                    stat = dict(line.split() for line in (root / 'memory.stat').read_text().splitlines())
+                    inactive = int(stat.get('inactive_file', stat.get('total_inactive_file', 0)))
+                except (OSError, ValueError):
+                    pass
+                charged = max(0, charged - inactive)
+                if used is None:
+                    used = charged
+                other = max(0, charged - used)
+                # Completed heavy tests peaked near 1.94 GB. This 2 GB soft
+                # envelope is also capped below the real container's limit.
+                budgets.append(min(2_000_000_000, max(0, int(limit * .80) - other)))
+            except (OSError, ValueError):
+                continue
+    return used, min(budgets) if budgets else None
+
+
+@st.cache_resource(show_spinner=False)
+def _report_resources_v129(application):
+    """Shared numeric reservations only; never cache user data or credentials."""
+    return {'lock': Lock(), 'active': {}, 'baseline': 0, 'counter': 0}
+
+
+def _reserve_report_memory_v129(state, estimated_bytes):
+    cost = max(0, int(estimated_bytes))
+    if not cost:
+        return 0, ''
+    with state['lock']:
+        used, budget = _report_memory_budget_v129()
+        active = state['active']
+        if used is None or budget is None:
+            # With no trustworthy container reading, do not assume extra RAM.
+            if active:
+                return None, 'busy'
+        else:
+            baseline = state['baseline'] if active else used
+            projected = max(used, baseline + sum(active.values())) + cost
+            if projected > budget:
+                return None, 'busy' if active else 'capacity'
+        if not active:
+            state['baseline'] = used or 0
+        state['counter'] += 1
+        token = state['counter']
+        active[token] = cost
+        return token, ''
+
+
+def _release_report_memory_v129(state, token):
+    if not token:
+        return
+    with state['lock']:
+        state['active'].pop(token, None)
+        if not state['active']:
+            state['baseline'] = 0
+
+
+@contextmanager
+def _report_resource_slot_v129(application, scope, estimated_bytes, *, retry=False):
+    state = _report_resources_v129(application)
+    token, reason = _reserve_report_memory_v129(state, estimated_bytes)
+    if token is None:
+        if reason == 'busy':
+            st.info('sedang diproses')
+            st.caption('Kapasitas pemrosesan sedang digunakan. Silakan coba lagi setelah proses selesai.')
+        else:
+            st.warning('Kapasitas memori server belum cukup untuk laporan ini. Persempit periode lalu coba lagi.')
+        if retry:
+            st.button('Coba lagi', key=f'report_resource_retry_v129_{scope}', use_container_width=True)
+        yield False
+        return
+    try:
+        if token:
+            with st.spinner('sedang diproses'):
+                yield True
+        else:
+            yield True
+    finally:
+        _release_report_memory_v129(state, token)
+
+
+def _estimate_report_memory_v129(data, scope, start, end, activity_id=None):
+    """Reserve transient report memory from selected source photos and records."""
+    jpeg_bytes = pixels = count = 0
+    activities = {a.get('id'): a for a in data.get('activities', [])}
+    for aid, sessions in (data.get('sessions') or {}).items():
+        if scope == 'book':
+            if activity_id and aid != activity_id:
+                continue
+        elif aid not in ('keg_1', 'keg_4', 'keg_9', 'keg_10', 'keg_11', 'keg_12'):
+            title = str(activities.get(aid, {}).get('title') or '').lower()
+            if scope != 'weekly' or 'langsir' not in title:
+                continue
+        for row in sessions or []:
+            day = _safe_date(row.get('date'))
+            if (start and day < start) or (end and day > end):
+                continue
+            count += 1
+            images = list(row.get('photos') or [])
+            if scope == 'book':
+                images.extend((row.get('signatures') or {}).values())
+            for encoded in images:
+                if not encoded:
+                    continue
+                fallback_pixels = 1600 * 2400 if aid == 'keg_20' else 1400 * 1400
+                try:
+                    if isinstance(encoded, (bytes, bytearray)):
+                        jpeg_bytes += len(encoded)
+                        header = bytes(encoded[:49152])
+                    else:
+                        value = str(encoded)
+                        if value.startswith('data:'):
+                            value = value.split(',', 1)[-1]
+                        jpeg_bytes += len(value) * 3 // 4
+                        prefix = value[:65536]
+                        header = base64.b64decode(prefix + '=' * (-len(prefix) % 4))
+                    with Image.open(io.BytesIO(header)) as image:
+                        pixels += int(image.width) * int(image.height)
+                except Exception:
+                    pixels += fallback_pixels
+    if scope == 'book' and not count:
+        return 0
+    mib = 1024 * 1024
+    if scope == 'book':
+        return 64 * mib + max(24 * jpeg_bytes, 8 * pixels) + count * 128 * 1024
+    return (48 if scope == 'weekly' else 64) * mib + max(8 * jpeg_bytes, 2 * pixels) + count * 64 * 1024
+
+
 def _toggle_report_preview_v128(scope):
     key=f'_report_preview_open_v128_{scope}'
     st.session_state[key]=not bool(st.session_state.get(key,False))
@@ -6464,6 +6621,13 @@ def render_buku_kerja_v341():
     if not _report_preview_requested_v128('book','Riwayat Kegiatan'):
         st.caption('Buka riwayat untuk melihat kegiatan dan mencetak PDF sesuai filter.')
         return
+    estimated=_estimate_report_memory_v129(data,'book',rs,re_,aid) if valid_period else 0
+    with _report_resource_slot_v129('main','book',estimated,retry=True) as allowed:
+        if allowed:
+            _render_book_history_v129(data,aid,rs,re_,valid_period)
+
+
+def _render_book_history_v129(data,aid,rs,re_,valid_period):
     rows=_book_sessions_flat(data,aid,rs,re_) if valid_period else []
     pdf=_book_pdf(data,rs,re_,aid) if rows else b''
     pdf_filename=_report_download_filename('Buku Kerja',data.get('station'),_report_date_range(rs,re_),'pdf')
@@ -7818,8 +7982,6 @@ if not _report_preview_requested_v128(mode,_preview_label):
 if mode == 'weekly':
     st.session_state['_v421_weekly_filter_start']=start
     st.session_state['_v421_weekly_filter_end']=end
-sync_book_work_to_forms(start=start, end=end)
-photos=dict(st.session_state.get('photos13',{}))
 
 
 def _v421_shsp_pages():
@@ -8206,57 +8368,64 @@ def _v421_render_ppt_preview(ppt_bytes, key_prefix, max_slides=60):
         # directory can be removed after rendering.
         shutil.rmtree(tmp_root,ignore_errors=True)
 
-if mode == 'full':
-    pages=_v421_pages_full()
-    st.markdown('### Preview D-Safe')
-    # Build exactly the same PPT that will be downloaded, then render each slide.
-    preview_general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
-                     'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,
-                     'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
-    _v421_review_full_pages(pages, photos)
+estimated=_estimate_report_memory_v129(data,mode,start,end)
+with _report_resource_slot_v129('main',mode,estimated,retry=True) as allowed:
+    if not allowed:
+        st.stop()
+    sync_book_work_to_forms(start=start, end=end)
+    photos=dict(st.session_state.get('photos13',{}))
 
-    # One evaluation review only. Editing is optional and there is no Save button.
-    _v421_evaluation_review(pages['eval'][0]['Hasil_Evaluasi'],'full')
-    pages=_v421_pages_full()
-    # One action only: the download button generates/downloads the current PPT.
-    general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
-             'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
-    try:
-        _full_ppt_bytes = build_full_v13(general,pages,photos)
-        _full_ppt_name = _report_download_filename('D-Safe',station_raw,period_label,'pptx')
-        _ppt_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation'
-        st.download_button('Generate PPT',_full_ppt_bytes,
-                           _full_ppt_name,
-                           _ppt_mime,use_container_width=True,key='v421_generate_full')
-        gdrive.render_output_actions(_full_ppt_bytes,_full_ppt_name,_ppt_mime,'dsafe',allow_admin=True)
-    except Exception as e:
-        st.exception(e)
+    if mode == 'full':
+        pages=_v421_pages_full()
+        st.markdown('### Preview D-Safe')
+        # Build exactly the same PPT that will be downloaded, then render each slide.
+        preview_general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
+                         'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,
+                         'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
+        _v421_review_full_pages(pages, photos)
 
-else:
-    pages=_v421_pages_weekly()
-    # Reuse the filtered D-Safe CCTV documentation under the weekly namespace.
-    for i in range(1, pages['cctv_count']+1):
-        for r in range(1,5):
-            src=photos.get(f'cctv{i}:Foto_CCTV.{r}')
-            if src:
-                photos[f'weekly_cctv{i}:Foto_CCTV.{r}']=src
-    st.markdown('### Preview Safety Talk Mingguan')
-    preview_general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
-                     'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,
-                     'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
-    _v421_review_weekly_pages(pages, photos)
+        # One evaluation review only. Editing is optional and there is no Save button.
+        _v421_evaluation_review(pages['eval'][0]['Hasil_Evaluasi'],'full')
+        pages=_v421_pages_full()
+        # One action only: the download button generates/downloads the current PPT.
+        general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
+                 'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
+        try:
+            _full_ppt_bytes = build_full_v13(general,pages,photos)
+            _full_ppt_name = _report_download_filename('D-Safe',station_raw,period_label,'pptx')
+            _ppt_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+            st.download_button('Generate PPT',_full_ppt_bytes,
+                               _full_ppt_name,
+                               _ppt_mime,use_container_width=True,key='v421_generate_full')
+            gdrive.render_output_actions(_full_ppt_bytes,_full_ppt_name,_ppt_mime,'dsafe',allow_admin=True)
+        except Exception as e:
+            st.exception(e)
 
-    pages=_v421_pages_weekly()
-    # One action only: the download button generates/downloads the current PPT.
-    general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
-             'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
-    try:
-        _weekly_ppt_bytes = build_weekly_v13(general,pages,photos)
-        _weekly_ppt_name = _report_download_filename('Safety Talk',station_raw,_report_date_range(start,end),'pptx')
-        _ppt_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation'
-        st.download_button('Generate PPT',_weekly_ppt_bytes,
-                           _weekly_ppt_name,
-                           _ppt_mime,use_container_width=True,key='v421_generate_weekly')
-        gdrive.render_output_actions(_weekly_ppt_bytes,_weekly_ppt_name,_ppt_mime,'safety',allow_admin=True)
-    except Exception as e:
-        st.exception(e)
+    else:
+        pages=_v421_pages_weekly()
+        # Reuse the filtered D-Safe CCTV documentation under the weekly namespace.
+        for i in range(1, pages['cctv_count']+1):
+            for r in range(1,5):
+                src=photos.get(f'cctv{i}:Foto_CCTV.{r}')
+                if src:
+                    photos[f'weekly_cctv{i}:Foto_CCTV.{r}']=src
+        st.markdown('### Preview Safety Talk Mingguan')
+        preview_general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
+                         'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,
+                         'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
+        _v421_review_weekly_pages(pages, photos)
+
+        pages=_v421_pages_weekly()
+        # One action only: the download button generates/downloads the current PPT.
+        general={'UPT':f'KUPT STASIUN {station_name}' if station_name else '', 'DAOP':daop,
+                 'STASIUN':station_name,'KUPT_STASIUN':station_name,'BULAN_TAHUN':period_label,'Hasil_Evaluasi':pages['eval'][0]['Hasil_Evaluasi']}
+        try:
+            _weekly_ppt_bytes = build_weekly_v13(general,pages,photos)
+            _weekly_ppt_name = _report_download_filename('Safety Talk',station_raw,_report_date_range(start,end),'pptx')
+            _ppt_mime='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+            st.download_button('Generate PPT',_weekly_ppt_bytes,
+                               _weekly_ppt_name,
+                               _ppt_mime,use_container_width=True,key='v421_generate_weekly')
+            gdrive.render_output_actions(_weekly_ppt_bytes,_weekly_ppt_name,_ppt_mime,'safety',allow_admin=True)
+        except Exception as e:
+            st.exception(e)
