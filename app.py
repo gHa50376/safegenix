@@ -5466,50 +5466,72 @@ def _simulation_people_widget_v131(data,old,prefix):
     roles=st.session_state[roles_key]
     people=list(dict.fromkeys(str(p.get('key') or p.get('short')) for p in data.get('people') or [] if p.get('key') or p.get('short')))
     options=['PPKA','PLR','PJL','PRS']
-    st.html('<div style="font-weight:700;line-height:1.4;padding:6px 0 8px;">Petugas &amp; Jabatan</div>')
-    st.markdown('''<style>
-    [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stHorizontalBlock"]{
-      display:grid!important;grid-template-columns:minmax(0,1fr) minmax(75px,.44fr) 44px!important;gap:6px!important;align-items:end!important}
-    [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stColumn"]{
-      width:100%!important;min-width:0!important;flex:unset!important}
-    [class*="st-key-bk_sim_people_"][class*="_pair_"] button{min-width:0!important;min-height:44px;padding:4px!important}
-    </style>''',unsafe_allow_html=True)
-    selected=[]
-    for number,row in enumerate(rows,1):
-        current=row.get('member')
-        taken={r.get('member') for r in rows if r is not row and r.get('member')}
-        choices=[key for key in people if key not in taken or key==current]
-        if current and current not in choices: choices.append(current)
-        with st.container(key=f'{prefix}_pair_{row["id"]}'):
-            name_col,job_col,remove_col=st.columns([3,1.4,.5],vertical_alignment='bottom')
-            with name_col:
-                def label(key):
-                    name=_person_name(data,key);nipp=_person_nipp(data,key)
-                    return name+(' — NIPP '+nipp if nipp else '')
-                member=st.selectbox(f'Petugas {number}',choices,
-                    index=choices.index(current) if current in choices else None,
-                    format_func=label,placeholder='Pilih petugas',key=f'{prefix}_member_{row["id"]}')
-                row['member']=member
-            with job_col:
-                suffix=hashlib.sha1(str(member).encode()).hexdigest()[:16] if member else 'empty_'+str(row['id'])
-                role=st.selectbox('Jabatan',options,index=options.index(roles.get(member)) if roles.get(member) in options else None,
-                    placeholder='Pilih',disabled=not member,key=f'{prefix}_role_{suffix}')
-                if member: roles[member]=role or ''
-            with remove_col:
-                if st.button('×',key=f'{prefix}_remove_{row["id"]}',help=f'Hapus petugas {number}',use_container_width=True):
-                    rows.remove(row)
-                    if not rows:
-                        next_id=st.session_state[prefix+'_next']
-                        rows.append({'id':next_id,'member':None})
-                        st.session_state[prefix+'_next']=next_id+1
-                    st.rerun()
-            if member: selected.append(member)
-    if st.button('+ Tambah petugas',key=prefix+'_add',use_container_width=True,
-                 disabled=len(selected)>=len(people)):
-        next_id=st.session_state[prefix+'_next']
-        rows.append({'id':next_id,'member':None})
-        st.session_state[prefix+'_next']=next_id+1
-        st.rerun()
+    with st.container(key=prefix+'_compact_v132'):
+        st.html('''<style>
+        [class*="st-key-bk_sim_people_"][class*="_compact_v132"]{gap:4px!important;min-width:0}
+        .sim-people-head-v132{display:grid;grid-template-columns:minmax(0,1fr) 96px 32px;gap:5px;
+          padding:2px 0 3px;color:#173d59;font-size:12px;font-weight:700;line-height:1.25}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"]{gap:0!important;min-width:0}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stHorizontalBlock"]{
+          display:grid!important;grid-template-columns:minmax(0,1fr) 96px 32px!important;
+          gap:5px!important;align-items:center!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stColumn"]{
+          width:100%!important;min-width:0!important;flex:unset!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stVerticalBlock"]{gap:0!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-baseweb="select"]>div{
+          min-height:36px!important;height:auto!important;padding:2px 4px!important;border-radius:8px!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-baseweb="select"]>div>div:first-child{
+          padding:2px 0!important;min-width:0!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-baseweb="select"]>div>div:last-child{padding-right:0!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-baseweb="select"] [value]{
+          font-size:11px!important;line-height:1.25!important;white-space:normal!important;overflow-wrap:anywhere!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stSelectbox"] input{
+          font-size:11px!important;min-width:0!important}
+        [class*="st-key-bk_sim_people_"][class*="_pair_"] button{
+          width:32px!important;min-width:0!important;min-height:36px!important;height:36px!important;
+          padding:0!important;border-radius:8px!important;box-shadow:none!important}
+        [class*="st-key-bk_sim_people_"][class*="_add_action_v132"] button{
+          width:auto!important;min-height:32px!important;height:auto!important;padding:3px 10px!important;
+          border-radius:8px!important;box-shadow:none!important}
+        [class*="st-key-bk_sim_people_"][class*="_add_action_v132"] button p{font-size:12px!important;line-height:1.25!important}
+        </style><div class="sim-people-head-v132" aria-hidden="true"><span>Petugas</span><span>Jabatan</span><span></span></div>''')
+        selected=[]
+        for number,row in enumerate(rows,1):
+            current=row.get('member')
+            taken={r.get('member') for r in rows if r is not row and r.get('member')}
+            choices=[key for key in people if key not in taken or key==current]
+            if current and current not in choices: choices.append(current)
+            with st.container(key=f'{prefix}_pair_{row["id"]}'):
+                name_col,job_col,remove_col=st.columns([3,1.4,.5],vertical_alignment='center')
+                with name_col:
+                    def label(key):
+                        name=_person_name(data,key);nipp=_person_nipp(data,key)
+                        return name+(' / '+str(nipp) if nipp else '')
+                    member=st.selectbox(f'Petugas {number}',choices,
+                        index=choices.index(current) if current in choices else None,
+                        format_func=label,placeholder='Pilih petugas',label_visibility='collapsed',key=f'{prefix}_member_{row["id"]}')
+                    row['member']=member
+                with job_col:
+                    suffix=hashlib.sha1(str(member).encode()).hexdigest()[:16] if member else 'empty_'+str(row['id'])
+                    role=st.selectbox('Jabatan',options,index=options.index(roles.get(member)) if roles.get(member) in options else None,
+                        placeholder='Pilih',disabled=not member,label_visibility='collapsed',key=f'{prefix}_role_{suffix}')
+                    if member: roles[member]=role or ''
+                with remove_col:
+                    if st.button('×',key=f'{prefix}_remove_{row["id"]}',help=f'Hapus petugas {number}',use_container_width=True):
+                        rows.remove(row)
+                        if not rows:
+                            next_id=st.session_state[prefix+'_next']
+                            rows.append({'id':next_id,'member':None})
+                            st.session_state[prefix+'_next']=next_id+1
+                        st.rerun()
+                if member: selected.append(member)
+        with st.container(key=prefix+'_add_action_v132'):
+            if st.button('+ Tambah petugas',key=prefix+'_add',use_container_width=False,
+                         disabled=len(selected)>=len(people)):
+                next_id=st.session_state[prefix+'_next']
+                rows.append({'id':next_id,'member':None})
+                st.session_state[prefix+'_next']=next_id+1
+                st.rerun()
     return selected,{key:roles.get(key,'') for key in selected}
 
 
