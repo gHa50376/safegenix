@@ -3397,7 +3397,7 @@ def _signature_activity_allowed(activity_title):
     }
     return aliases.get(key, key) in SIGNATURE_ACTIVITY_TITLES
 
-def _signature_inputs(data, selected, saved=None, prefix='booksig', activity_title=None):
+def _signature_inputs(data, selected, saved=None, prefix='booksig', activity_title=None, in_form=True):
     saved=saved or {}
     sigs=dict(saved)
     if not _signature_activity_allowed(activity_title):
@@ -3418,7 +3418,8 @@ def _signature_inputs(data, selected, saved=None, prefix='booksig', activity_tit
             with label_col:
                 st.markdown(f'**TTD — {html.escape(label)}**')
             with edit_col:
-                if st.form_submit_button('✎',key=f'{prefix}_{person}_edit'):
+                edit_button=st.form_submit_button if in_form else st.button
+                if edit_button('✎',key=f'{prefix}_{person}_edit'):
                     st.session_state[edit_key]=st.session_state.get(edit_key,0)+1
                     sigs.pop(person,None)
             c=st_canvas(stroke_width=2, stroke_color='#17324d', background_color='#ffffff',
@@ -5158,7 +5159,7 @@ def _session_find(data, sid):
     return None,None
 
 
-def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures, persist=True, berita_acara=None):
+def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures, persist=True, berita_acara=None, member_roles=None):
     sid = sid or ('sess_'+hashlib.sha1(f'{datetime.now().timestamp()}'.encode()).hexdigest()[:12])
     created = datetime.now().timestamp()
     old_aid, old = _session_find(data, sid) if sid else (None,None)
@@ -5182,6 +5183,9 @@ def _save_session_from_form(data, sid, activity_id, d, note, members, photos, si
         'photos':stored_photos,
         'signatures':dict(signatures or {}),'createdAt':created,
     }
+    if activity_id == 'keg_4':
+        roles=member_roles if member_roles is not None else _simulation_member_roles_v131(old)
+        session['member_roles']={key:str(roles.get(key) or '') for key in session['members']}
     if activity_id == 'keg_12':
         attachment=berita_acara if berita_acara is not None else (old or {}).get('berita_acara')
         if attachment: session['berita_acara']=attachment
@@ -5378,6 +5382,8 @@ def _paginate_simulation_v130(pages):
             if all(value.strip() in ('','-') for value in values): continue
             number+=1
             lines=[_simulation_lines_v130(value,width*72) for value,width in zip(values,widths)]
+            if page.get(f'{row}.People_v131'):
+                lines[1],lines[2]=_simulation_person_lines_v131(page[f'{row}.People_v131'],max_lines)
             count=max(map(len,lines))
             for offset in range(0,count,max_lines):
                 size=min(max_lines,count-offset)
@@ -5388,7 +5394,7 @@ def _paginate_simulation_v130(pages):
                 for index,field in enumerate(lines):
                     part=field[offset:offset+max_lines]
                     # Repeat short identity fields on continuation slides.
-                    if not part and index<3: part=field
+                    if not part and index<3 and len(field)<=max_lines: part=field
                     cells.append('\n'.join(part) if part else '-')
                 current.append({'no':str(number)+(' (lanj.)' if offset else ''),'cells':cells,'height':height})
                 used+=height
@@ -5436,6 +5442,95 @@ def _fill_simulation_table_v130(slide,page):
                 for run in paragraph.runs:
                     run.font.name='Arial';run.font.size=Pt(14)
     shape.height=sum(row.height for row in table.rows)
+
+
+def _simulation_member_roles_v131(session):
+    """Roles belong to stable member keys; migrate the former shared role."""
+    session=session or {}
+    roles=session.get('member_roles')
+    if not isinstance(roles,dict):
+        legacy=_parse_simulation_note(session.get('note','')).get('jabatan','')
+        roles={key:legacy for key in session.get('members') or []}
+    return {str(key):str(roles.get(key) or '') for key in session.get('members') or []}
+
+
+def _simulation_people_widget_v131(data,old,prefix):
+    row_key=prefix+'_rows'
+    roles_key=prefix+'_roles'
+    if row_key not in st.session_state:
+        members=list(dict.fromkeys((old or {}).get('members') or []))
+        st.session_state[row_key]=[{'id':i,'member':key} for i,key in enumerate(members or [None])]
+        st.session_state[prefix+'_next']=len(st.session_state[row_key])
+        st.session_state[roles_key]=_simulation_member_roles_v131(old)
+    rows=st.session_state[row_key]
+    roles=st.session_state[roles_key]
+    people=list(dict.fromkeys(str(p.get('key') or p.get('short')) for p in data.get('people') or [] if p.get('key') or p.get('short')))
+    options=['PPKA','PLR','PJL','PRS']
+    st.html('<div style="font-weight:700;line-height:1.4;padding:6px 0 8px;">Petugas &amp; Jabatan</div>')
+    st.markdown('''<style>
+    [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stHorizontalBlock"]{
+      display:grid!important;grid-template-columns:minmax(0,1fr) minmax(75px,.44fr) 44px!important;gap:6px!important;align-items:end!important}
+    [class*="st-key-bk_sim_people_"][class*="_pair_"] [data-testid="stColumn"]{
+      width:100%!important;min-width:0!important;flex:unset!important}
+    [class*="st-key-bk_sim_people_"][class*="_pair_"] button{min-width:0!important;min-height:44px;padding:4px!important}
+    </style>''',unsafe_allow_html=True)
+    selected=[]
+    for number,row in enumerate(rows,1):
+        current=row.get('member')
+        taken={r.get('member') for r in rows if r is not row and r.get('member')}
+        choices=[key for key in people if key not in taken or key==current]
+        if current and current not in choices: choices.append(current)
+        with st.container(key=f'{prefix}_pair_{row["id"]}'):
+            name_col,job_col,remove_col=st.columns([3,1.4,.5],vertical_alignment='bottom')
+            with name_col:
+                def label(key):
+                    name=_person_name(data,key);nipp=_person_nipp(data,key)
+                    return name+(' — NIPP '+nipp if nipp else '')
+                member=st.selectbox(f'Petugas {number}',choices,
+                    index=choices.index(current) if current in choices else None,
+                    format_func=label,placeholder='Pilih petugas',key=f'{prefix}_member_{row["id"]}')
+                row['member']=member
+            with job_col:
+                suffix=hashlib.sha1(str(member).encode()).hexdigest()[:16] if member else 'empty_'+str(row['id'])
+                role=st.selectbox('Jabatan',options,index=options.index(roles.get(member)) if roles.get(member) in options else None,
+                    placeholder='Pilih',disabled=not member,key=f'{prefix}_role_{suffix}')
+                if member: roles[member]=role or ''
+            with remove_col:
+                if st.button('×',key=f'{prefix}_remove_{row["id"]}',help=f'Hapus petugas {number}',use_container_width=True):
+                    rows.remove(row)
+                    if not rows:
+                        next_id=st.session_state[prefix+'_next']
+                        rows.append({'id':next_id,'member':None})
+                        st.session_state[prefix+'_next']=next_id+1
+                    st.rerun()
+            if member: selected.append(member)
+    if st.button('+ Tambah petugas',key=prefix+'_add',use_container_width=True,
+                 disabled=len(selected)>=len(people)):
+        next_id=st.session_state[prefix+'_next']
+        rows.append({'id':next_id,'member':None})
+        st.session_state[prefix+'_next']=next_id+1
+        st.rerun()
+    return selected,{key:roles.get(key,'') for key in selected}
+
+
+def _simulation_person_lines_v131(pairs,max_lines):
+    """Give each name and its role an equal number of fixed-height lines."""
+    names=[];roles=[]
+    for name,role in pairs:
+        name_lines=_simulation_lines_v130(name,2.296*72)
+        role_lines=_simulation_lines_v130(role or '-',1.243*72)
+        size=max(len(name_lines),len(role_lines))
+        remainder=len(names)%max_lines
+        if remainder and remainder+size>max_lines:
+            padding=max_lines-remainder
+            names.extend(['']*padding);roles.extend(['']*padding)
+        for offset in range(0,size,max_lines):
+            name_part=name_lines[offset:offset+max_lines]
+            role_part=role_lines[offset:offset+max_lines] or role_lines[:max_lines]
+            length=max(len(name_part),len(role_part))
+            names.extend(name_part+['']*(length-len(name_part)))
+            roles.extend(role_part+['']*(length-len(role_part)))
+    return names,roles
 
 
 def _parse_simulation_note(note):
@@ -5533,11 +5628,8 @@ def _book_note_for_activity(title, old_note='', widget_prefix='bk_note', cctv_pe
         return note
     if key in ('simulasi', 'simulasi pelayanan normal & darurat'):
         f=_parse_simulation_note(old_note)
-        options=['PPKA','PLR','PJL','PRS']
-        jabatan=st.selectbox('Jabatan',options,index=options.index(f['jabatan']) if f['jabatan'] in options else None,
-                            placeholder='Pilih jabatan',key=f'{widget_prefix}_sim_jabatan')
         materi=st.text_area('Materi Simulasi', value=f['materi'], height=180, key=f'{widget_prefix}_sim_materi')
-        note='Jabatan: '+str(jabatan or '')+'\nMateri Simulasi: '+materi.strip()
+        note='Materi Simulasi: '+materi.strip()
         # Historical notes are retained in storage when edited; the removed
         # field is no longer displayed in the input or the simulation PPT.
         if f['keterangan']: note+='\nKeterangan: '+f['keterangan']
@@ -5656,14 +5748,18 @@ def sync_book_work_to_forms(start=None, end=None):
             st.session_state[f'{prefix}_j']=''
             st.session_state[f'{prefix}_k']=''
             st.session_state[f'{prefix}_m']=''
+            st.session_state[f'{prefix}_people_v131']=[]
             if row_no > len(chunk):
                 continue
 
             _,_,sess=chunk[row_no-1]
             simf=_parse_simulation_note(sess.get('note',''))
             st.session_state[f'{prefix}_d']=_safe_date(sess.get('date'))
-            st.session_state[f'{prefix}_n']=_members_names(data,sess.get('members',[]))
-            st.session_state[f'{prefix}_j']=simf['jabatan']
+            roles=_simulation_member_roles_v131(sess)
+            pairs=[[_members_names(data,[key]),roles.get(key,'')] for key in sess.get('members') or []]
+            st.session_state[f'{prefix}_people_v131']=pairs
+            st.session_state[f'{prefix}_n']='\n'.join(name for name,_ in pairs)
+            st.session_state[f'{prefix}_j']='\n'.join(role or '-' for _,role in pairs) if pairs else simf['jabatan']
             st.session_state[f'{prefix}_k']=simf['keterangan']
             st.session_state[f'{prefix}_m']=simf['materi']
 
@@ -6395,7 +6491,7 @@ def render_buku_kerja_v341():
             # Keep each new form's photos, signatures and selectors independent.
             st.session_state['bk_new_token']='new_'+hashlib.sha1(f'{datetime.now().timestamp()}'.encode()).hexdigest()[:10]
             for k in list(st.session_state.keys()):
-                if k.startswith(('bk_people_new_','bk_signatures_new_','bk_group_new','bk_subactivity_new','bk_subactivities_new_','bk_date_new','bk_sig_new_','bk_photos_new_','bk_shsp_','bk_cek_photos_new','bk_langsir_photo_new','bk_other_photos_new','bk_daily_new_')):
+                if k.startswith(('bk_sim_people_','bk_people_new_','bk_signatures_new_','bk_group_new','bk_subactivity_new','bk_subactivities_new_','bk_date_new','bk_sig_new_','bk_photos_new_','bk_shsp_','bk_cek_photos_new','bk_langsir_photo_new','bk_other_photos_new','bk_daily_new_')):
                     st.session_state.pop(k, None)
         st.session_state['bk_last_view_v36454']=book_view
     st.session_state['bk_form_open']=(book_view == 'input')
@@ -6477,8 +6573,19 @@ def render_buku_kerja_v341():
             # form, setelah field kegiatan dan tepat sebelum Dokumentasi.
             title_key=' '.join(str(title or '').strip().lower().split())
             linked_direct = title_key in ('satu hari satu pasal','cek emplasemen oleh ks','pengawasan langsir')
+            simulation=title_key in ('simulasi','simulasi pelayanan normal & darurat')
+            member_roles=None
             with st.container(key='bk_input_identity_v76'):
-                if linked_direct or form_group == 'Kegiatan Lainnya':
+                if simulation:
+                    d=st.date_input('Tanggal',_safe_date(old.get('date')) if old else _today_jakarta(),format='DD/MM/YYYY',key=f'bk_date_{form_token}')
+                    people_key=f'bk_people_{form_token}_{aid}'
+                    selected,member_roles=_simulation_people_widget_v131(data,old,f'bk_sim_people_{form_token}_{aid}')
+                    st.session_state[f'{people_key}_value']=list(selected)
+                    sig_state_key=f'bk_signatures_{form_token}_{aid}'
+                    if sig_state_key not in st.session_state:
+                        st.session_state[sig_state_key]=dict((old or {}).get('signatures') or {})
+                    signatures=dict(st.session_state[sig_state_key])
+                elif linked_direct or form_group == 'Kegiatan Lainnya':
                     d=st.date_input('Tanggal',_safe_date(old.get('date')) if old else _today_jakarta(),format='DD/MM/YYYY',key=f'bk_date_{form_token}')
                     selected=[]
                     signatures={}
@@ -6519,7 +6626,7 @@ def render_buku_kerja_v341():
             # Daily fields already update outside a form for immediate photo
             # preview. Use ordinary buttons for that path so a text blur cannot
             # interrupt a separate form submission while editing a report.
-            form_container=(st.container() if daily_payload is not None
+            form_container=(st.container() if daily_payload is not None or simulation
                             else st.form(f'book_form_v350_{form_token}',clear_on_submit=False))
             with form_container:
                 # Kegiatan yang sudah terhubung langsung ke template D-Safe memakai
@@ -6650,7 +6757,7 @@ def render_buku_kerja_v341():
                         signatures=_signature_inputs(
                             data, selected, signatures,
                             prefix='bk_sig_'+str(form_token)+'_'+str(aid),
-                            activity_title=title
+                            activity_title=title,in_form=not simulation
                         )
                         st.session_state[sig_state_key]=dict(signatures)
                     old_photos=[_from_b64(x) for x in (old.get('photos',[]) if old else []) if x]
@@ -6668,7 +6775,7 @@ def render_buku_kerja_v341():
                     old_photos=[_from_b64(x) for x in (old.get('photos',[]) if old else []) if x]
                 if old_photos: st.caption(f'{len(old_photos)} foto lama tersimpan. Upload baru akan menggantinya.')
                 c1,c2=st.columns(2)
-                submit_button=st.button if daily_payload is not None else st.form_submit_button
+                submit_button=st.button if daily_payload is not None or simulation else st.form_submit_button
                 with c1: save=submit_button('Simpan Kegiatan',type='primary',use_container_width=True,key=f'bk_save_submit_{form_token}')
                 with c2: cancel=submit_button('Batal',use_container_width=True,key=f'bk_cancel_submit_{form_token}')
             if cancel:
@@ -6676,6 +6783,9 @@ def render_buku_kerja_v341():
                 st.query_params['bk_view']='list'
                 st.rerun()
             if save:
+                if simulation and any((member_roles or {}).get(key) not in ('PPKA','PLR','PJL','PRS') for key in selected):
+                    st.error('Pilih jabatan untuk setiap petugas Simulasi sebelum menyimpan.')
+                    st.stop()
                 if form_group == ACTIVITY_GROUP_OTHER and not edit:
                     if not other_titles:
                         st.error('Pilih minimal satu Sub Kegiatan sebelum menyimpan.')
@@ -6813,7 +6923,7 @@ def render_buku_kerja_v341():
                             st.stop()
                     elif berita_acara_remove:
                         berita_acara={}
-                _save_session_from_form(data,edit,aid,d,note,selected,final_photos,signatures,berita_acara=berita_acara)
+                _save_session_from_form(data,edit,aid,d,note,selected,final_photos,signatures,berita_acara=berita_acara,member_roles=member_roles)
 
                 # Keep the user's last range; extend only to include this date.
                 saved_d=_safe_date(d)
@@ -8276,6 +8386,7 @@ def _v421_sim_pages():
             jab=st.session_state.get(f'sim13_{i}_{r}_j','') or ''
             ket=st.session_state.get(f'sim13_{i}_{r}_k','') or ''
             materi=st.session_state.get(f'sim13_{i}_{r}_m','') or ''
+            page[f'{r}.People_v131']=st.session_state.get(f'sim13_{i}_{r}_people_v131') or []
             has_data=bool(d or nama or jab or ket or materi)
             if has_data:
                 page[f'{r}.Hari_Tanggal']=format_activity_date_id(d) if d else '-'
