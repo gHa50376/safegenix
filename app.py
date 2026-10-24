@@ -980,7 +980,14 @@ from pptx.util import Inches, Pt
 
 
 def clone_slide_after(prs, source_slide, after_slide=None):
+    from pptx.opc.packuri import PackURI
+    existing={str(slide.part.partname) for slide in prs.slides}
     new_slide = prs.slides.add_slide(source_slide.slide_layout)
+    # python-pptx bases new part names on slide count. After deleting unused
+    # template slides, that number can already belong to a surviving slide.
+    if str(new_slide.part.partname) in existing:
+        number=max((int(re.search(r'slide(\d+)\.xml$',name).group(1)) for name in existing),default=0)+1
+        new_slide.part.partname=PackURI(f'/ppt/slides/slide{number}.xml')
     rid_map = {}
     for rel in source_slide.part.rels.values():
         if rel.reltype.endswith('/slideLayout') or rel.reltype.endswith('/notesSlide'):
@@ -1129,9 +1136,13 @@ def build_full_v13(general, pages, photos):
         for n in range(1, 9):
             put_photo(sl, pphoto(photos, f'cek{i}', f'Foto{n}'), .37+((n-1)%4)*3.14, 1.72+((n-1)//4)*2.95, 2.85, 2.25)
 
-    sim = activity_slides(prs, src_sim, pages['sim_count'])
-    for i in range(1, pages['sim_count']+1):
-        replace_text_on_slide(sim[i-1], pages['sim'][i-1])
+    for i,sl in enumerate(cek,1):
+        _add_berita_acara_slides_v130(prs,sl,_berita_acara_pages_v130(photos,i))
+
+    sim_pages = _paginate_simulation_v130(pages.get('sim') or [])
+    sim = activity_slides(prs, src_sim, len(sim_pages))
+    for sl,page in zip(sim,sim_pages):
+        _fill_simulation_table_v130(sl,page)
 
     # V36.4.40 — Dokumentasi Simulasi is a global photo pool, independent
     # from the 4-row simulation table pagination.  This allows four activities
@@ -1532,12 +1543,11 @@ def render_sim_page(i, photos, labels):
     with st.container(border=True):
         st.markdown(f'**Lembar {i}**')
         for r in range(1, 5):
-            c = st.columns(5)
+            c = st.columns([2,2,1,4])
             with c[0]: vals[f'{r}.Hari_Tanggal'] = date_field('Tanggal', f'sim13_{i}_{r}_d')
             with c[1]: vals[f'{r}.Nama'] = st.text_input('Nama', key=f'sim13_{i}_{r}_n')
-            with c[2]: vals[f'{r}.Jabatan'] = st.selectbox('Jabatan', ['', 'PPKA','PLR','PJL'], key=f'sim13_{i}_{r}_j')
-            with c[3]: vals[f'{r}.Keterangan'] = st.text_input('Keterangan', key=f'sim13_{i}_{r}_k')
-            with c[4]: vals[f'{r}.Materi_Simulasi'] = st.text_input('Materi Simulasi', key=f'sim13_{i}_{r}_m')
+            with c[2]: vals[f'{r}.Jabatan'] = st.selectbox('Jabatan', ['', 'PPKA','PLR','PJL','PRS'], key=f'sim13_{i}_{r}_j')
+            with c[3]: vals[f'{r}.Materi_Simulasi'] = st.text_area('Materi Simulasi', key=f'sim13_{i}_{r}_m')
             single_upload(f'sim{i}:FotoS.{r}', f'Foto kegiatan {r}', photos, labels)
     return vals
 
@@ -5148,7 +5158,7 @@ def _session_find(data, sid):
     return None,None
 
 
-def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures, persist=True):
+def _save_session_from_form(data, sid, activity_id, d, note, members, photos, signatures, persist=True, berita_acara=None):
     sid = sid or ('sess_'+hashlib.sha1(f'{datetime.now().timestamp()}'.encode()).hexdigest()[:12])
     created = datetime.now().timestamp()
     old_aid, old = _session_find(data, sid) if sid else (None,None)
@@ -5172,6 +5182,9 @@ def _save_session_from_form(data, sid, activity_id, d, note, members, photos, si
         'photos':stored_photos,
         'signatures':dict(signatures or {}),'createdAt':created,
     }
+    if activity_id == 'keg_12':
+        attachment=berita_acara if berita_acara is not None else (old or {}).get('berita_acara')
+        if attachment: session['berita_acara']=attachment
     if activity_id == DAILY_REPORT_ACTIVITY_ID:
         # Keep the user's line breaks, indentation and numbered paragraphs.
         session['note']=str(note or '')
@@ -5238,20 +5251,204 @@ def _parse_safety_note(note):
     return fields
 
 
+def _read_berita_acara_pdf_v130(upload):
+    """Render sequentially with a bounded bitmap, closing every native handle."""
+    import pypdfium2 as pdfium
+    raw=upload.getvalue()
+    if len(raw)>20*1024*1024:
+        raise ValueError('PDF berita acara maksimal 20 MB. Kegiatan belum disimpan.')
+    document=None
+    try:
+        document=pdfium.PdfDocument(raw)
+        if not len(document):
+            raise ValueError('PDF berita acara tidak memiliki halaman.')
+        if len(document)>60:
+            raise ValueError('PDF berita acara maksimal 60 halaman. Kegiatan belum disimpan.')
+        images=[]
+        for index in range(len(document)):
+            page=bitmap=pil=None
+            try:
+                page=document[index]
+                width,height=page.get_size()
+                if min(width,height)<=0:
+                    raise ValueError('Ukuran halaman PDF tidak valid.')
+                bitmap=page.render(scale=min(2.0,1400/max(width,height)))
+                pil=bitmap.to_pil().convert('RGB')
+                buf=io.BytesIO()
+                pil.save(buf,'JPEG',quality=86,optimize=True)
+                images.append(base64.b64encode(buf.getvalue()).decode('ascii'))
+            finally:
+                if pil is not None: pil.close()
+                if bitmap is not None: bitmap.close()
+                if page is not None: page.close()
+        return {'name':Path(str(getattr(upload,'name','Berita Acara.pdf'))).name,'pages':images}
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError('PDF berita acara tidak dapat dibaca. Gunakan PDF yang valid dan tidak terkunci. Kegiatan belum disimpan.') from exc
+    finally:
+        if document is not None: document.close()
+
+
+def _berita_acara_pages_v130(photos,index):
+    items=[]
+    for key,value in photos.items():
+        match=re.fullmatch(r'cekba'+str(index)+r':Halaman(\d+)',str(key))
+        if match and value: items.append((int(match.group(1)),value))
+    return [value for _,value in sorted(items)]
+
+
+def _add_berita_acara_slides_v130(prs,source,images):
+    """Insert immediately after this activity, retaining the title and KAI logo."""
+    after=source
+    for offset in range(0,len(images),6):
+        slide=clone_slide_after(prs,source,after)
+        after=slide
+        for shape in list(slide.shapes):
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                continue
+            if getattr(shape,'has_text_frame',False) and 'Cek Emplasemen' in shape.text:
+                for paragraph in shape.text_frame.paragraphs:
+                    if paragraph.runs:
+                        paragraph.runs[0].text='Berita Acara Cek Emplasemen'
+                        for run in paragraph.runs[1:]: run.text=''
+                        for run in paragraph.runs: run.font.size=Pt(28)
+                shape.width=Inches(10.8)
+            else:
+                delete_shape(shape)
+        chunk=images[offset:offset+6]
+        columns=min(3,len(chunk))
+        rows=(len(chunk)+columns-1)//columns
+        box_width=(12.5-(columns-1)*.18)/columns
+        box_height=(5.72-(rows-1)*.25)/rows
+        for pos,image in enumerate(chunk):
+            left=.4+(pos%columns)*(box_width+.18)
+            top=1.42+(pos//columns)*(box_height+.25)
+            with Image.open(io.BytesIO(image)) as picture:
+                width,height=picture.size
+            scale=min(box_width/width,(box_height-.25)/height)
+            w,h=width*scale,height*scale
+            slide.shapes.add_picture(io.BytesIO(image),Inches(left+(box_width-w)/2),
+                                     Inches(top),width=Inches(w),height=Inches(h))
+            set_textbox(slide,left,top+box_height-.24,box_width,.22,
+                        f'Halaman {offset+pos+1}',size=10)
+
+
+def _simulation_lines_v130(value,width_pt):
+    """Measure Arial-compatible glyph widths; preserve paragraph breaks."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    lines=[]
+    # The 8% margin covers font substitution in PowerPoint and LibreOffice.
+    usable=(width_pt-10)/1.08
+    for paragraph in str(value or '-').split('\n'):
+        if not paragraph:
+            lines.append('')
+            continue
+        rest=paragraph
+        while rest:
+            if stringWidth(rest,'Helvetica',14)<=usable:
+                lines.append(rest)
+                break
+            lo,hi=1,len(rest)
+            while lo<hi:
+                mid=(lo+hi+1)//2
+                if stringWidth(rest[:mid],'Helvetica',14)<=usable: lo=mid
+                else: hi=mid-1
+            cut=rest.rfind(' ',0,lo+1)
+            if cut<max(1,lo//2): cut=lo
+            lines.append(rest[:cut].rstrip())
+            rest=rest[cut:].lstrip(' ')
+    return lines or ['-']
+
+
+def _paginate_simulation_v130(pages):
+    """Split rows by available height; exceptionally long rows continue intact."""
+    if pages and all('_sim_rows_v130' in page for page in pages): return pages
+    widths=[1.878,2.296,1.243,4.383]
+    capacity=(6.063-.780)*72
+    line_height=17.5
+    max_lines=int((capacity-14)//line_height)
+    result=[]
+    current=[]
+    used=0
+    number=0
+    for page in pages:
+        for row in range(1,5):
+            values=[str(page.get(f'{row}.{key}') or '-') for key in ('Hari_Tanggal','Nama','Jabatan','Materi_Simulasi')]
+            if all(value.strip() in ('','-') for value in values): continue
+            number+=1
+            lines=[_simulation_lines_v130(value,width*72) for value,width in zip(values,widths)]
+            count=max(map(len,lines))
+            for offset in range(0,count,max_lines):
+                size=min(max_lines,count-offset)
+                height=max(66,size*line_height+14)
+                if current and (used+height>capacity or len(current)>=4):
+                    result.append({'_sim_rows_v130':current});current=[];used=0
+                cells=[]
+                for index,field in enumerate(lines):
+                    part=field[offset:offset+max_lines]
+                    # Repeat short identity fields on continuation slides.
+                    if not part and index<3: part=field
+                    cells.append('\n'.join(part) if part else '-')
+                current.append({'no':str(number)+(' (lanj.)' if offset else ''),'cells':cells,'height':height})
+                used+=height
+    if current: result.append({'_sim_rows_v130':current})
+    return result
+
+
+def _fill_simulation_table_v130(slide,page):
+    from copy import deepcopy
+    from pptx.enum.text import PP_ALIGN,MSO_ANCHOR
+    for title in slide.shapes:
+        if getattr(title,'has_text_frame',False) and 'Simulasi Kondisi Darurat' in title.text:
+            title.left=Inches(.3);title.top=Inches(.12)
+            title.width=Inches(10.8);title.height=Inches(.8)
+            for paragraph in title.text_frame.paragraphs:
+                paragraph.alignment=PP_ALIGN.LEFT
+                for run in paragraph.runs: run.font.size=Pt(32)
+    shape=next(sh for sh in slide.shapes if sh.has_table)
+    table=shape.table
+    # Remove only the requested Keterangan column, transferring all its width.
+    if len(table.columns)==6:
+        width=table.columns[4].width+table.columns[5].width
+        grid=table._tbl.tblGrid
+        grid.remove(grid.gridCol_lst[4])
+        for row in table.rows:
+            row._tr.remove(row._tr.tc_lst[4])
+        table.columns[4].width=width
+    prototype=deepcopy(table.rows[1]._tr)
+    for row in list(table._tbl.tr_lst)[1:]: table._tbl.remove(row)
+    for entry in page['_sim_rows_v130']:
+        table._tbl.append(deepcopy(prototype))
+        row=table.rows[len(table.rows)-1]
+        row.height=Pt(entry['height'])
+        values=[entry['no']]+entry['cells']
+        for col,(cell,value) in enumerate(zip(row.cells,values)):
+            cell.text=value
+            cell.margin_left=Pt(5);cell.margin_right=Pt(5)
+            cell.margin_top=Pt(6);cell.margin_bottom=Pt(6)
+            cell.vertical_anchor=MSO_ANCHOR.MIDDLE
+            cell.text_frame.word_wrap=True
+            for paragraph in cell.text_frame.paragraphs:
+                paragraph.alignment=PP_ALIGN.LEFT if col==4 else PP_ALIGN.CENTER
+                paragraph.space_before=Pt(0);paragraph.space_after=Pt(0)
+                paragraph.line_spacing=Pt(17.5)
+                for run in paragraph.runs:
+                    run.font.name='Arial';run.font.size=Pt(14)
+    shape.height=sum(row.height for row in table.rows)
+
+
 def _parse_simulation_note(note):
-    """Read the Buku Kerja simulation note in the same field structure as D-Safe."""
+    """Read current fields and retain legacy Keterangan for old records."""
     text=str(note or '').strip()
-    fields={'keterangan':'','materi':''}
-    patterns={
-        'keterangan':r'(?is)(?:keterangan)\s*:\s*(.*?)(?=\n\s*(?:materi\s*simulasi|materi)\s*:|$)',
-        'materi':r'(?is)(?:materi\s*simulasi|materi)\s*:\s*(.*?)(?=\n\s*keterangan\s*:|$)',
-    }
-    for k,pat in patterns.items():
-        m=re.search(pat,text)
-        if m: fields[k]=m.group(1).strip()
+    fields={'jabatan':'','keterangan':'','materi':''}
+    for key,label in (('jabatan','jabatan'),('keterangan','keterangan'),('materi',r'materi(?:[ \t]+simulasi)?')):
+        match=re.search(r'(?ims)^[ \t]*(?:'+label+r')[ \t]*:[ \t]*(.*?)(?=\n[ \t]*(?:jabatan|keterangan|materi(?:[ \t]+simulasi)?)[ \t]*:|\Z)',text)
+        if match: fields[key]=match.group(1).strip()
     if not any(fields.values()) and text:
-        fields['keterangan']=text
+        fields['materi']=text
     return fields
+
 
 def _parse_shsp_note(note):
     """Read Satu Hari Satu Pasal fields without crossing into the next line.
@@ -5336,10 +5533,14 @@ def _book_note_for_activity(title, old_note='', widget_prefix='bk_note', cctv_pe
         return note
     if key in ('simulasi', 'simulasi pelayanan normal & darurat'):
         f=_parse_simulation_note(old_note)
-        a,b=st.columns(2)
-        with a: keterangan=st.text_area('Keterangan', value=f['keterangan'], height=120, key=f'{widget_prefix}_sim_keterangan')
-        with b: materi=st.text_area('Materi Simulasi', value=f['materi'], height=120, key=f'{widget_prefix}_sim_materi')
-        note='Keterangan: '+keterangan.strip()+'\nMateri Simulasi: '+materi.strip()
+        options=['PPKA','PLR','PJL','PRS']
+        jabatan=st.selectbox('Jabatan',options,index=options.index(f['jabatan']) if f['jabatan'] in options else None,
+                            placeholder='Pilih jabatan',key=f'{widget_prefix}_sim_jabatan')
+        materi=st.text_area('Materi Simulasi', value=f['materi'], height=180, key=f'{widget_prefix}_sim_materi')
+        note='Jabatan: '+str(jabatan or '')+'\nMateri Simulasi: '+materi.strip()
+        # Historical notes are retained in storage when edited; the removed
+        # field is no longer displayed in the input or the simulation PPT.
+        if f['keterangan']: note+='\nKeterangan: '+f['keterangan']
         return note
     if key == 'satu hari satu pasal':
         f=_parse_shsp_note(old_note)
@@ -5415,6 +5616,9 @@ def sync_book_work_to_forms(start=None, end=None):
 
     # Cek Emplasemen Oleh KS: one Buku Kerja transaction = one photo sheet.
     cek=core_sessions('keg_12')
+    for key in list(photos):
+        if re.match(r'^cekba\d+:Halaman\d+$',str(key)):
+            photos.pop(key,None)
     st.session_state['n14_cek']=len(cek)
     for i,(_,_,s) in enumerate(cek,1):
         for n in range(1,9):
@@ -5422,6 +5626,10 @@ def sync_book_work_to_forms(start=None, end=None):
         for n,b64 in enumerate(s.get('photos',[])[:8],1):
             b=_from_b64(b64)
             if b: photos[f'cek{i}:Foto{n}']=b
+
+        for n,encoded in enumerate((s.get('berita_acara') or {}).get('pages') or [],1):
+            b=_from_b64(encoded)
+            if b: photos[f'cekba{i}:Halaman{n}']=b
 
     # V36.4.40 — Simulasi is a 4-row table, not one slide per transaction.
     # Pack four Buku Kerja transactions into one simulation table/sheet:
@@ -5455,7 +5663,7 @@ def sync_book_work_to_forms(start=None, end=None):
             simf=_parse_simulation_note(sess.get('note',''))
             st.session_state[f'{prefix}_d']=_safe_date(sess.get('date'))
             st.session_state[f'{prefix}_n']=_members_names(data,sess.get('members',[]))
-            st.session_state[f'{prefix}_j']=''
+            st.session_state[f'{prefix}_j']=simf['jabatan']
             st.session_state[f'{prefix}_k']=simf['keterangan']
             st.session_state[f'{prefix}_m']=simf['materi']
 
@@ -5830,18 +6038,38 @@ def _release_report_memory_v129(state, token):
             state['baseline'] = 0
 
 
+def _report_capacity_available_v130(state, estimated_bytes):
+    cost = max(0, int(estimated_bytes))
+    with state['lock']:
+        used, budget = _report_memory_budget_v129()
+        active = state['active']
+        if used is None or budget is None:
+            return not active
+        baseline = state['baseline'] if active else used
+        return max(used, baseline + sum(active.values())) + cost <= budget
+
+
+def _wait_for_report_capacity_v130(state, estimated_bytes):
+    first_render = True
+    @st.fragment(run_every=2)
+    def watch_capacity():
+        nonlocal first_render
+        st.info('sedang diproses')
+        st.caption('Menunggu kapasitas tersedia. Permintaan akan dilanjutkan otomatis selama halaman ini terbuka.')
+        if first_render:
+            first_render = False
+            return
+        if _report_capacity_available_v130(state, estimated_bytes):
+            st.rerun()
+    watch_capacity()
+
+
 @contextmanager
 def _report_resource_slot_v129(application, scope, estimated_bytes, *, retry=False):
     state = _report_resources_v129(application)
     token, reason = _reserve_report_memory_v129(state, estimated_bytes)
     if token is None:
-        if reason == 'busy':
-            st.info('sedang diproses')
-            st.caption('Kapasitas pemrosesan sedang digunakan. Silakan coba lagi setelah proses selesai.')
-        else:
-            st.warning('Kapasitas memori server belum cukup untuk laporan ini. Persempit periode lalu coba lagi.')
-        if retry:
-            st.button('Coba lagi', key=f'report_resource_retry_v129_{scope}', use_container_width=True)
+        _wait_for_report_capacity_v130(state, estimated_bytes)
         yield False
         return
     try:
@@ -5872,6 +6100,8 @@ def _estimate_report_memory_v129(data, scope, start, end, activity_id=None):
                 continue
             count += 1
             images = list(row.get('photos') or [])
+            if scope == 'full' and aid == 'keg_12':
+                images.extend((row.get('berita_acara') or {}).get('pages') or [])
             if scope == 'book':
                 images.extend((row.get('signatures') or {}).values())
             for encoded in images:
@@ -6298,6 +6528,8 @@ def render_buku_kerja_v341():
                 title_key=' '.join(str(title or '').strip().lower().split())
                 linked_direct = title_key in ('satu hari satu pasal','cek emplasemen oleh ks','pengawasan langsir')
                 photo_inputs=[]
+                berita_acara_upload=None
+                berita_acara_remove=False
                 if title_key == 'pengawasan cctv':
                     # CCTV: exactly one selected petugas and exactly one documentation photo.
                     signatures={}
@@ -6341,6 +6573,13 @@ def render_buku_kerja_v341():
                     note=''
                     old_photos=[_from_b64(x) for x in (old.get('photos',[]) if old else []) if x][:8]
                     photo_inputs=st.file_uploader('Dokumentasi Cek Emplasemen — maks. 8 foto',type=['jpg','jpeg','png','webp'],accept_multiple_files=True,key=f'bk_cek_photos_{form_token}')
+                    berita_acara_upload=st.file_uploader('Berita Acara Cek Emplasemen (opsional)',type=['pdf'],
+                        accept_multiple_files=False,key=f'bk_cek_ba_{form_token}')
+                    st.caption('PDF maksimal 20 MB dan 60 halaman. Semua halaman disertakan; hingga 6 halaman PDF per slide berita acara.')
+                    old_ba=(old or {}).get('berita_acara') or {}
+                    if old_ba.get('pages'):
+                        st.caption(f"Berita acara tersimpan: {old_ba.get('name','PDF')} · {len(old_ba['pages'])} halaman. Tetap digunakan jika tidak diganti.")
+                        berita_acara_remove=st.checkbox('Hapus berita acara tersimpan',key=f'bk_cek_ba_remove_{form_token}')
                     if old_photos:
                         st.caption(f'{len(old_photos)} foto lama tersimpan. Upload baru akan menggantinya.')
                 elif title_key == 'pengawasan langsir':
@@ -6563,7 +6802,18 @@ def render_buku_kerja_v341():
                     if duplicate_found:
                         st.error('Foto tersebut sudah pernah digunakan pada kegiatan ini. Kegiatan belum disimpan. Gunakan foto yang berbeda.')
                         st.stop()
-                _save_session_from_form(data,edit,aid,d,note,selected,final_photos,signatures)
+                berita_acara=None
+                if title_key == 'cek emplasemen oleh ks':
+                    if berita_acara_upload is not None:
+                        try:
+                            with st.spinner('Memproses halaman berita acara…'):
+                                berita_acara=_read_berita_acara_pdf_v130(berita_acara_upload)
+                        except ValueError as exc:
+                            st.error(str(exc))
+                            st.stop()
+                    elif berita_acara_remove:
+                        berita_acara={}
+                _save_session_from_form(data,edit,aid,d,note,selected,final_photos,signatures,berita_acara=berita_acara)
 
                 # Keep the user's last range; extend only to include this date.
                 saved_d=_safe_date(d)
@@ -8042,7 +8292,7 @@ def _v421_sim_pages():
                 page[f'{r}.Keterangan']='-'
                 page[f'{r}.Materi_Simulasi']='-'
         pages.append(page)
-    return pages
+    return _paginate_simulation_v130(pages)
 
 
 def _v421_cctv_pages():
@@ -8115,7 +8365,12 @@ def _v421_table(headers, rows, widths=None):
         for x in row:
             cells.append(f'<td style="border:1px solid #000;padding:3px 4px;vertical-align:top;line-height:1.22;">{x}</td>')
         rr.append('<tr>'+''.join(cells)+'</tr>')
-    return '<table style="width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:10px;color:#000;"><thead><tr>'+h+'</tr></thead><tbody>'+''.join(rr)+'</tbody></table>'
+    columns=''
+    extra=''
+    if widths and len(widths)==len(headers):
+        columns='<colgroup>'+''.join(f'<col style="width:{float(width)}%;">' for width in widths)+'</colgroup>'
+        extra='table-layout:fixed;overflow-wrap:anywhere;'
+    return '<table style="width:100%;'+extra+'border-collapse:collapse;font-family:Arial,sans-serif;font-size:10px;color:#000;">'+columns+'<thead><tr>'+h+'</tr></thead><tbody>'+''.join(rr)+'</tbody></table>'
 
 
 def _v421_photo_cell(items, max_w=72, max_h=54):
@@ -8176,15 +8431,20 @@ def _v421_review_full_pages(pages, photos):
             if b: pics.append(b)
         body='<div style="font-size:11px;margin-bottom:6px;">Dokumentasi Cek Emplasemen Oleh KS</div><div style="display:flex;flex-wrap:wrap;gap:4px;">'+_v421_photo_cell(pics,110,78)+'</div>'
         st.markdown(_v421_page_shell(f'D-Safe — Cek Emplasemen Oleh KS — Lembar {i+1}',body),unsafe_allow_html=True)
-    # V36.4.40 — the preview mirrors the template: one simulation table
-    # contains up to four activities. Documentation remains a separate photo
-    # section pooled across the selected period, 8 photos per page.
-    for i,p in enumerate(pages.get('sim',[]),1):
-        rows=[]
-        for r in range(1,5):
-            rows.append([p.get(f'{r}.Hari_Tanggal','-'),p.get(f'{r}.Nama','-'),p.get(f'{r}.Jabatan','-'),p.get(f'{r}.Keterangan','-'),p.get(f'{r}.Materi_Simulasi','-')])
+        ba_pages=_berita_acara_pages_v130(photos,i+1)
+        for offset in range(0,len(ba_pages),6):
+            chunk=ba_pages[offset:offset+6]
+            body='<div style="display:grid;grid-template-columns:repeat('+str(min(3,len(chunk)))+',minmax(0,1fr));gap:8px;">'
+            for page_no,b in enumerate(chunk,offset+1):
+                encoded=base64.b64encode(b).decode('ascii')
+                body+=f'<div style="min-width:0;text-align:center;"><img src="data:image/jpeg;base64,{encoded}" style="width:100%;height:auto;object-fit:contain;"/><div>Halaman {page_no}</div></div>'
+            body+='</div>'
+            st.markdown(_v421_page_shell(f'D-Safe — Berita Acara Cek Emplasemen — Lembar {i+1}'+(' (lanjutan)' if offset else ''),body),unsafe_allow_html=True)
+    for i,p in enumerate(_paginate_simulation_v130(pages.get('sim') or []),1):
+        rows=[[html.escape(str(value)).replace('\n','<br>') for value in [row['no']]+row['cells']] for row in p['_sim_rows_v130']]
         if rows:
-            st.markdown(_v421_page_shell(f'D-Safe — Simulasi Pelayanan Normal & Darurat — Lembar {i}',_v421_table(['Hari / Tanggal','Nama','Jabatan','Keterangan','Materi Simulasi'],rows)),unsafe_allow_html=True)
+            st.markdown(_v421_page_shell(f'D-Safe — Simulasi Pelayanan Normal & Darurat — Lembar {i}',
+                _v421_table(['No','Hari / Tanggal','Nama','Jabatan','Materi Simulasi'],rows,widths=[9,17,21,12,41])),unsafe_allow_html=True)
 
     sim_review_photos=[]
     simdoc_items=[]
@@ -8280,10 +8540,11 @@ def _v421_evaluation_review(text, mode_key):
 
 def _v421_pages_full():
     cctv=_v421_cctv_pages()
+    sim=_v421_sim_pages()
     pages={
         'shsp':_v421_shsp_pages(), 'shsp_count':int(st.session_state.get('n14_shsp',0) or 0),
         'cek':[{} for _ in range(int(st.session_state.get('n14_cek',0) or 0))], 'cek_count':int(st.session_state.get('n14_cek',0) or 0),
-        'sim':_v421_sim_pages(), 'sim_count':int(st.session_state.get('n14_sim',0) or 0),
+        'sim':sim, 'sim_count':len(sim),
         'cctv':cctv, 'cctv_count':len(cctv),
         'eval':_v421_eval_pages('full'), 'eval_count':1
     }
