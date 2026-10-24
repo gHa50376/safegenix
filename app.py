@@ -5744,6 +5744,20 @@ def _validate_daily_report(payload):
     return ''
 
 
+def _toggle_report_preview_v128(scope):
+    key=f'_report_preview_open_v128_{scope}'
+    st.session_state[key]=not bool(st.session_state.get(key,False))
+
+
+def _report_preview_requested_v128(scope, label):
+    """Keep filters visible; prepare photos and report files only on request."""
+    opened=bool(st.session_state.get(f'_report_preview_open_v128_{scope}',False))
+    st.button(('Tutup ' if opened else 'Lihat ')+label,
+              key=f'report_preview_toggle_v128_{scope}',use_container_width=True,
+              on_click=_toggle_report_preview_v128,args=(scope,))
+    return opened
+
+
 def _book_preview_filter():
     """Keep the last preview selection outside disposable widget state."""
     state=st.session_state.get('_bk_preview_filter_v122')
@@ -6443,11 +6457,14 @@ def render_buku_kerja_v341():
         _remember_book_preview_filter()
     aid=next((a['id'] for a in data['activities'] if a['title']==sel),None)
     valid_period=re_>=rs
-    rows=_book_sessions_flat(data,aid,rs,re_) if valid_period else []
     if not valid_period:
         st.error('Tanggal sampai tidak boleh sebelum tanggal mulai.')
     st.button('+',key='bk_add_v58',
               on_click=_navigate_v36458,args=('Buku Kerja','input'))
+    if not _report_preview_requested_v128('book','Riwayat Kegiatan'):
+        st.caption('Buka riwayat untuk melihat kegiatan dan mencetak PDF sesuai filter.')
+        return
+    rows=_book_sessions_flat(data,aid,rs,re_) if valid_period else []
     pdf=_book_pdf(data,rs,re_,aid) if rows else b''
     pdf_filename=_report_download_filename('Buku Kerja',data.get('station'),_report_date_range(rs,re_),'pdf')
     st.download_button('Cetak / Simpan PDF',pdf,
@@ -7790,6 +7807,12 @@ else:
         st.stop()
     start,end=weekly_from,weekly_to
     period_label=f'{format_date_id(weekly_from)} s/d {format_date_id(weekly_to)}'
+
+# Keep period controls available without decoding photos or building the PPT.
+_preview_label='Preview D-Safe' if mode == 'full' else 'Preview Safety Talk'
+if not _report_preview_requested_v128(mode,_preview_label):
+    st.caption('Buka preview untuk melihat laporan dan membuat PPT sesuai periode.')
+    st.stop()
 
 # Synchronize only transactions inside the selected period.
 if mode == 'weekly':
